@@ -21,7 +21,10 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Software Development :: Version Control :: Git",
 ]
-dependencies = []
+dependencies = [
+  "typer>=0.12",
+  "textual>=0.80",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -45,3 +48,8 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
