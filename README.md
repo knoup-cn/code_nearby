@@ -1,29 +1,47 @@
 # brain
 
-CLI tools for managing Git repositories.
+A dual-mode knowledge management tool with both TUI and CLI interfaces.
 
-## Quick start
+## Quick Start (No Installation)
+
+### TUI Mode (Interactive)
+
+```bash
+python -m brain
+```
+
+### CLI Mode (Commands)
+
+```bash
+python -m brain init
+python -m brain status
+python -m brain --help
+```
+
+## Installation (Optional)
+
+For system-wide access:
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[dev]"
-brain --help
+pip install -e .
 ```
 
-## Commands
+Then use the `brain` command directly:
 
 ```bash
-brain status [PATH]
-brain repos [PATH]
+brain          # Launch TUI
+brain init     # CLI commands
+brain status
 ```
 
-- `status` prints the current Git branch and porcelain status for one repository.
-- `repos` finds Git repositories under a directory.
+Built with [Typer](https://typer.tiangolo.com/) for type-safe CLI development.
 
 ## Development
 
 ```bash
-python -m pytest
-python -m ruff check .
+pip install -e ".[dev]"
+pytest
+ruff check .
 ```
