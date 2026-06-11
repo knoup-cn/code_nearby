@@ -1,4 +1,4 @@
-"""CLI tools for managing Git repositories."""
+"""Brain CLI"""
 
 __all__ = ["__version__"]
 
