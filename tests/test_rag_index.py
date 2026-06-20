@@ -40,6 +40,22 @@ def test_metadata_filter(index: RagIndex) -> None:
     assert index.query_bm25("compute total", 5, path_glob="other/*.py") == []
 
 
+def test_path_glob_double_star_matches_top_level(tmp_path: Path) -> None:
+    root = tmp_path / "proj"
+    (root / "src" / "sub").mkdir(parents=True)
+    (root / "src" / "a.py").write_text("def alpha() -> int:\n    return 1\n")
+    (root / "src" / "sub" / "b.py").write_text("def beta() -> int:\n    return 2\n")
+    idx = RagIndex.open(tmp_path / "i.sqlite3")
+    try:
+        for rel in ("src/a.py", "src/sub/b.py"):
+            idx.upsert(chunk_file(root / rel, root))
+        # '**' must match both the nested file and the top-level one
+        hits = idx.query_bm25("return", 10, path_glob="src/**/*.py")
+        assert {cid.split("::")[0] for cid in hits} == {"src/a.py", "src/sub/b.py"}
+    finally:
+        idx.close()
+
+
 def test_short_query_skips_trigram(index: RagIndex) -> None:
     assert index.query_symbol("ab", 5) == []  # < 3 chars
 

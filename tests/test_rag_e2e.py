@@ -10,10 +10,10 @@ import pytest
 from typer.testing import CliRunner
 
 from brain import cli, operations
-from brain.rag.assemble import assemble, estimate_tokens
+from brain.rag.assemble import assemble, chunk_tokens
 from brain.rag.chunker import chunk_file
 from brain.rag.index import RagIndex
-from brain.rag.retrieve import search
+from brain.rag.retrieve import ScoredChunk, search
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "sample_pkg"
 runner = CliRunner()
@@ -46,7 +46,7 @@ def test_token_budget_trims_and_flags(index: RagIndex) -> None:
     results = search(index, "self root widget repository load", k=8)
     assert len(results) >= 2
     # budget that admits only the first chunk
-    first_cost = estimate_tokens(results[0].chunk.content)
+    first_cost = chunk_tokens(results[0].chunk)
     payload = assemble("q", results, budget=first_cost)
     assert len(payload["results"]) == 1
     assert payload["truncated"] is True
@@ -58,6 +58,27 @@ def test_no_budget_keeps_all(index: RagIndex) -> None:
     payload = assemble("q", results, budget=None)
     assert len(payload["results"]) == len(results)
     assert payload["truncated"] is False
+
+
+def test_budget_keeps_smaller_lower_ranked_chunk() -> None:
+    chunks = sorted(
+        chunk_file(FIXTURE_ROOT / "repository.py", FIXTURE_ROOT),
+        key=chunk_tokens,
+    )
+    small1, small2, big = chunks[0], chunks[1], chunks[-1]
+    assert chunk_tokens(big) > chunk_tokens(small2)  # precondition: big won't fit the slack
+    # rank order places the oversized chunk between two small ones
+    results = [
+        ScoredChunk(small1, 3.0),
+        ScoredChunk(big, 2.0),
+        ScoredChunk(small2, 1.0),
+    ]
+    payload = assemble("q", results, budget=chunk_tokens(small1) + chunk_tokens(small2))
+    kept = {r["ref"] for r in payload["results"]}
+    assert f"{small1.file_path}:{small1.start_line}" in kept
+    assert f"{small2.file_path}:{small2.start_line}" in kept  # filled despite the earlier big chunk
+    assert f"{big.file_path}:{big.start_line}" not in kept
+    assert payload["truncated"] is True
 
 
 # --- CLI end-to-end --------------------------------------------------------

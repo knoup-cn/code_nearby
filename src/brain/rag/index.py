@@ -195,7 +195,7 @@ class RagIndex:
             params.append(language)
         if path_glob:
             where.append("c.file_path GLOB ?")
-            params.append(path_glob)
+            params.append(_normalize_glob(path_glob))
         params.append(limit)
         sql = (
             f"SELECT {table}.chunk_id AS chunk_id, bm25({table}) AS score "
@@ -206,6 +206,17 @@ class RagIndex:
 
 
 # --- text helpers ----------------------------------------------------------
+
+def _normalize_glob(pattern: str) -> str:
+    """Map shell-style ``**`` onto SQLite GLOB semantics.
+
+    SQLite ``GLOB`` has no ``**`` and its single ``*`` already spans ``/``. A
+    recursive ``src/**/*.py`` must therefore collapse to ``src/*.py`` so it
+    matches both ``src/a.py`` and ``src/sub/b.py``; left as-is the trailing
+    ``/`` would exclude top-level files.
+    """
+    return pattern.replace("**/", "*").replace("**", "*")
+
 
 def _search_blob(chunk: Chunk) -> str:
     """Indexed text: signature + docstring + content + split identifiers."""
