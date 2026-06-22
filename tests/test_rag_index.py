@@ -116,7 +116,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(
         config,
         "load_config",
-        lambda: {"local_path": str(kb), "git_repo": "x"},
+        lambda: {"local_path": str(kb)},
     )
     return repo
 
@@ -162,9 +162,3 @@ def test_index_project_handles_deletion(project: Path) -> None:
     _git(project, "commit", "-aqm", "remove f2")
     inc = run_full_analysis(project)
     assert inc["chunks_deleted"] == f2_chunks
-
-
-def test_full_rebuild_writes_gitignore(project: Path) -> None:
-    run_full_analysis(project, full_rebuild=True)
-    gitignore = Path(config.load_config()["local_path"]) / ".gitignore"
-    assert "**/.rag/" in gitignore.read_text().split()

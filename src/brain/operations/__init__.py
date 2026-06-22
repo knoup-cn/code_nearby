@@ -3,13 +3,10 @@
 请直接导入子模块：
 
 配置管理：
-    from brain.operations.config import init_config, get_status, clear_config
+    from brain.operations.config import get_status, clear_config, is_git_repo
 
 分析入口：
     from brain.operations.analysis import run_full_analysis
-
-Git 同步：
-    from brain.operations.sync import sync_knowledge_base
 
 依赖图：
     from brain.operations.graph_generator import generate_project_graph

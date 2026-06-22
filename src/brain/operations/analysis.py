@@ -31,12 +31,8 @@ def run_full_analysis(project_path: Path, full_rebuild: bool = False) -> dict:
             "error": str | None,
         }
     """
-    # 加载配置
-    cfg = config.load_config()
-    kb_root = cfg.get("local_path")
-    if not kb_root:
-        return {"success": False, "error": "Knowledge base not initialized"}
-    kb_path = Path(kb_root)
+    # 获取知识库路径
+    kb_path = config.get_kb_path()
 
     try:
         project_kb_path = storage.ensure_project_kb_path(kb_path, project_path)
@@ -66,7 +62,6 @@ def run_full_analysis(project_path: Path, full_rebuild: bool = False) -> dict:
 
     # --- 准备 RAG 索引 ---
     rag_dir = project_kb_path / ".rag"
-    _ensure_rag_gitignore(kb_path)
     if full_rebuild:
         shutil.rmtree(rag_dir, ignore_errors=True)
     index = RagIndex.open(rag_dir / "index.sqlite3")
@@ -142,12 +137,3 @@ def run_full_analysis(project_path: Path, full_rebuild: bool = False) -> dict:
     }
 
 
-def _ensure_rag_gitignore(kb_path: Path) -> None:
-    """将派生的、二进制的 ``.rag/`` 索引排除在知识库仓库之外。"""
-    gitignore = kb_path / ".gitignore"
-    rule = "**/.rag/"
-    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
-    if rule in existing.split():
-        return
-    prefix = "" if existing.endswith("\n") or not existing else "\n"
-    gitignore.write_text(f"{existing}{prefix}{rule}\n", encoding="utf-8")

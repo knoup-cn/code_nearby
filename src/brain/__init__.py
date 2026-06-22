@@ -42,16 +42,12 @@ def analyze(project_path: str | Path = ".", *, full: bool = False) -> dict[str, 
 
     Raises:
         FileNotFoundError: project_path 不存在。
-        RuntimeError: 知识库未初始化。
     """
     from brain.operations.analysis import run_full_analysis
-    from brain.operations.config import get_status
 
     target = Path(project_path).resolve()
     if not target.exists():
         raise FileNotFoundError(f"Project path does not exist: {target}")
-    if not get_status():
-        raise RuntimeError("Knowledge base not initialized. Run 'brain init' first.")
     return run_full_analysis(target, full_rebuild=full)
 
 
@@ -91,18 +87,13 @@ def search(
         }
 
     Raises:
-        RuntimeError: 知识库或搜索索引未初始化。
+        RuntimeError: 搜索索引未初始化。
     """
-    from brain import storage
-    from brain.operations.config import get_status
+    from brain import config, storage
     from brain.rag import assemble, retrieve
     from brain.rag.index import RagIndex
 
-    cfg = get_status()
-    if not cfg:
-        raise RuntimeError("Knowledge base not initialized. Run 'brain init' first.")
-
-    kb_path = Path(cfg["local_path"])
+    kb_path = config.get_kb_path()
     target = Path(project_path).resolve()
     project_kb_path = storage.get_project_kb_path(kb_path, target)
     index_file = project_kb_path / ".rag" / "index.sqlite3" if project_kb_path else None

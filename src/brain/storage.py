@@ -8,26 +8,27 @@ from pathlib import Path
 from brain import git_utils
 
 
-def get_project_kb_path(kb_path: Path, project_path: Path) -> Path | None:
-    """根据 org/project 结构获取项目的知识库子目录。
+def get_project_kb_path(kb_path: Path, project_path: Path) -> Path:
+    """获取项目的知识库子目录。
+
+    优先通过 git remote URL 推导 ``org/project`` 结构；
+    若不可用则回退到项目目录名。
 
     Args:
         kb_path: 知识库根目录
         project_path: 源项目目录
 
     Returns:
-        格式为 {kb_path}/{org}/{project}/ 的路径，若无法确定仓库身份则返回 None
+        {kb_path}/{org}/{project}/ 或 {kb_path}/{project_name}/ 格式的路径
     """
     remote_url = git_utils.get_remote_url(project_path)
-    if not remote_url:
-        return None
+    if remote_url:
+        identity = git_utils.parse_repo_identity(remote_url)
+        if identity:
+            org, project = identity
+            return kb_path / org / project
 
-    identity = git_utils.parse_repo_identity(remote_url)
-    if not identity:
-        return None
-
-    org, project = identity
-    return kb_path / org / project
+    return kb_path / project_path.resolve().name
 
 
 def ensure_project_kb_path(kb_path: Path, project_path: Path) -> Path:
@@ -39,17 +40,8 @@ def ensure_project_kb_path(kb_path: Path, project_path: Path) -> Path:
 
     Returns:
         项目知识库目录的路径
-
-    Raises:
-        RuntimeError: 若无法确定仓库身份
     """
     project_kb_path = get_project_kb_path(kb_path, project_path)
-    if not project_kb_path:
-        raise RuntimeError(
-            f"Cannot determine repository identity for {project_path}. "
-            "Ensure the repository has a remote 'origin' configured."
-        )
-
     project_kb_path.mkdir(parents=True, exist_ok=True)
     return project_kb_path
 

@@ -14,43 +14,35 @@ def get_config_path() -> Path:
 
 
 def load_config() -> dict:
-    """加载配置。"""
+    """加载配置，始终返回包含 local_path 的有效字典。"""
     path = get_config_path()
     if not path.exists():
-        return {}
-    config = json.loads(path.read_text())
-    if not validate_config(config):
-        raise ValueError(
-            "Invalid config: git_repo and local_path must both exist or both be absent"
-        )
-    return config
+        return _default_config()
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return _default_config()
+    if "local_path" not in data:
+        return _default_config()
+    return data
 
 
 def save_config(config: dict) -> None:
     """保存配置。"""
-    if not validate_config(config):
-        raise ValueError(
-            "Invalid config: git_repo and local_path must both exist or both be absent"
-        )
     get_config_path().write_text(json.dumps(config, indent=2))
 
 
-def validate_config(config: dict) -> bool:
-    """验证配置。
+def get_kb_path() -> Path:
+    """获取知识库本地路径，不存在则自动创建。
 
-    配置必须为空（未初始化）或同时包含两个知识库字段：
-    git_repo 和 local_path。不支持纯本地模式（仅有 local_path 而无
-    git_repo）。
+    默认路径为 ``~/brain-vault``，可通过 config.json 中的
+    ``local_path`` 键自定义。
     """
-    if not config:
-        return True
-    return "git_repo" in config and "local_path" in config
+    cfg = load_config()
+    kb_path = Path(cfg["local_path"]).expanduser().resolve()
+    kb_path.mkdir(parents=True, exist_ok=True)
+    return kb_path
 
 
-def is_initialized() -> bool:
-    """检查 brain 是否已使用有效的知识库完成初始化。"""
-    try:
-        config = load_config()
-        return bool(config.get("git_repo") and config.get("local_path"))
-    except (ValueError, json.JSONDecodeError):
-        return False
+def _default_config() -> dict:
+    return {"local_path": str(Path.home() / "brain-vault")}

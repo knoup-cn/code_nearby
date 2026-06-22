@@ -10,7 +10,8 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 
-from brain.operations.config import clear_config, get_status, init_config, needs_overwrite
+from brain import config
+from brain.operations.config import clear_config
 
 
 class ConfirmDialog(ModalScreen):
@@ -108,7 +109,7 @@ class BrainApp(App):
         ("q", "quit", "Quit"),
         ("escape", "blur", "Unfocus"),
     ]
-    status = reactive("Not initialized")
+    status = reactive("Loading...")
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -133,57 +134,33 @@ class BrainApp(App):
         self.screen.set_focus(None)
 
     def _refresh(self) -> None:
-        """Refresh UI based on configuration state."""
-        cfg = get_status()
+        """Refresh UI showing knowledge base status."""
         container = self.query_one("#main", ScrollableContainer)
         # Remove dynamic content only (keep title and status)
         for widget in list(container.children)[2:]:
             widget.remove()
 
-        if cfg:
-            self._show_configured(container, cfg)
-        else:
-            self._show_init_form(container)
-
+        self._show_dashboard(container)
         self._update_status()
 
-    def _show_init_form(self, container: ScrollableContainer) -> None:
-        """Show initialization form."""
-        default_kb_path = str(Path.home() / "brain-vault")
+    def _show_dashboard(self, container: ScrollableContainer) -> None:
+        """Show knowledge base dashboard."""
+        kb_path = config.get_kb_path()
 
         container.mount(
-            Label("Initialize your knowledge base"),
-            Static("📁 Knowledge Base Local Path", classes="section"),
-            Input(placeholder=default_kb_path, value=default_kb_path, id="local_path"),
-            Static("📦 Knowledge Base Git Repository", classes="section"),
-            Input(placeholder="https://github.com/user/repo.git", id="git_repo"),
-            Button("🚀 Initialize", id="init", variant="primary"),
-        )
-
-    def _show_configured(self, container: ScrollableContainer, cfg: dict) -> None:
-        """Show configured state."""
-        local_path = cfg.get("local_path", "N/A")
-        git_repo = cfg.get("git_repo", "N/A")
-
-        container.mount(
-            Static("📁 Knowledge Base Local Path", classes="section"),
-            Label(local_path),
-            Static("📦 Knowledge Base Git Repository", classes="section"),
-            Label(git_repo),
-            Button("⚙️ Reconfigure", id="reconfig"),
-            Button("❌ Clear", id="clear", variant="error"),
+            Static("📁 Knowledge Base", classes="section"),
+            Label(str(kb_path)),
+            Static("", classes="section"),
+            Static("💡 Run 'brain analyze <project>' to build a search index.", classes="section"),
+            Static("   'brain search <query>' to query the index."),
+            Button("⚙️ Change KB Path", id="change_path"),
+            Button("🔄 Reset to Default", id="reset", variant="error"),
         )
 
     def _update_status(self) -> None:
         """Update status bar."""
-        cfg = get_status()
-        if not cfg:
-            self.status = "Not initialized"
-        else:
-            local_path = cfg.get("local_path", "")
-            vault = Path(local_path).name if local_path else "N/A"
-            git = "synced" if cfg.get("git_repo") else "not synced"
-            self.status = f"{vault} ({git})"
+        kb_path = config.get_kb_path()
+        self.status = f"KB: {kb_path.name} ({kb_path})"
 
     def _set_status(self, msg: str, error: bool = False) -> None:
         """Set status message with styling."""
@@ -195,56 +172,66 @@ class BrainApp(App):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id
 
-        if btn_id == "init":
-            self._handle_init()
-        elif btn_id == "reconfig":
-            clear_config()
-            self._refresh()
-            self._set_status("Ready to reconfigure")
-        elif btn_id == "clear":
-            self.push_screen(ConfirmDialog("⚠️ Clear all?"), self._handle_clear)
-
-    def _handle_init(self) -> None:
-        """Handle initialization."""
-        local_input = self.query_one("#local_path", Input)
-        git_input = self.query_one("#git_repo", Input)
-
-        local_path = local_input.value.strip()
-        kb_git_repo = git_input.value.strip() or None
-
-        if not local_path:
-            self._set_status("✗ Knowledge base local path required", True)
-            return
-
-        kb_path = Path(local_path).expanduser().resolve()
-
-        if needs_overwrite(kb_path):
+        if btn_id == "change_path":
+            self._handle_change_path()
+        elif btn_id == "reset":
             self.push_screen(
-                ConfirmDialog("⚠️ Directory not empty. Overwrite?"),
-                lambda confirmed: self._complete_init(kb_git_repo, kb_path, confirmed),
+                ConfirmDialog("⚠️ Reset KB path to default (~/brain-vault)?"),
+                self._handle_reset,
             )
-        else:
-            self._complete_init(kb_git_repo, kb_path, overwrite=False)
 
-    def _complete_init(self, git_repo: str | None, kb_path: Path, overwrite: bool) -> None:
-        """Complete initialization after confirmation."""
-        if needs_overwrite(kb_path) and not overwrite:
-            self._set_status("Initialization cancelled")
+    def _handle_change_path(self) -> None:
+        """Prompt for a new KB path."""
+        self.push_screen(
+            _PathInputDialog(),
+            lambda new_path: self._apply_new_path(new_path),
+        )
+
+    def _apply_new_path(self, new_path: str | None) -> None:
+        """Apply the new KB path."""
+        if not new_path:
             return
+        path = Path(new_path.strip()).expanduser().resolve()
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            self._set_status(f"✗ Cannot create directory: {e}", True)
+            return
+        config.save_config({"local_path": str(path)})
+        self._refresh()
+        self._set_status(f"✓ KB path updated: {path}")
 
-        success, msg = init_config(git_repo, kb_path, overwrite)
+    def _handle_reset(self, confirmed: bool) -> None:
+        """Reset KB path to default."""
+        if not confirmed:
+            return
+        clear_config()
+        self._refresh()
+        self._set_status("✓ Reset to default")
 
-        if success:
-            self._refresh()
+
+class _PathInputDialog(ModalScreen):
+    """Dialog to input a new KB path."""
+
+    BINDINGS = [("escape", "dismiss", "Cancel")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Static("Enter new knowledge base path:")
+            yield Input(placeholder=str(Path.home() / "brain-vault"), id="kb_path_input")
+            yield Button("✓ Save", id="save", variant="primary")
+            yield Button("✗ Cancel", id="cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "save":
+            value = self.query_one("#kb_path_input", Input).value.strip()
+            self.dismiss(value if value else None)
         else:
-            self._set_status(f"✗ {msg}", True)
+            self.dismiss(None)
 
-    def _handle_clear(self, confirmed: bool) -> None:
-        """Handle clear configuration."""
-        if confirmed:
-            clear_config()
-            self._refresh()
-            self._set_status("✓ Cleared")
+    def action_dismiss(self) -> None:
+        """Handle Escape key."""
+        self.dismiss(None)
 
 
 def run() -> None:

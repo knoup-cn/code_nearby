@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -79,33 +78,6 @@ def test_parse_repo_identity_single_segment():
     url = "https://github.com/onlyone"
     result = parse_repo_identity(url)
     assert result is None
-
-
-def test_clone_repo_clones_directly_to_target_path(tmp_path):
-    """Test that clone_repo uses the configured local path as clone target."""
-    from brain.git_utils import clone_repo
-
-    target_path = tmp_path / "vault"
-    repo_url = "https://github.com/octocat/hello-world.git"
-
-    completed = subprocess.CompletedProcess(
-        args=["git", "clone", repo_url, str(target_path)],
-        returncode=0,
-        stdout="",
-        stderr="",
-    )
-
-    with patch("brain.git_utils.subprocess.run", return_value=completed) as run:
-        success, message = clone_repo(repo_url, target_path)
-
-    assert success
-    assert message == "Cloned"
-    run.assert_called_once_with(
-        ["git", "clone", repo_url, str(target_path)],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
 
 
 def _git(repo: Path, *args: str) -> None:
