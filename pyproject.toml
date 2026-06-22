@@ -5,21 +5,21 @@ build-backend = "hatchling.build"
 [project]
 name = "brain"
 version = "0.1.0"
-description = "CLI tools for managing Git repositories."
+description = "Code knowledge base — RAG indexing + dependency graph for source directories."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
   { name = "Knoup" },
 ]
-keywords = ["cli", "git", "repository-management"]
+keywords = ["cli", "code-search", "rag", "knowledge-base"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
-  "Topic :: Software Development :: Version Control :: Git",
+  "Topic :: Software Development",
 ]
 dependencies = [
   "typer>=0.12",
@@ -41,6 +41,9 @@ dev = [
 ]
 embed = [
   "fastembed>=0.4",
+]
+mcp = [
+  "watchdog>=4.0",
 ]
 
 [project.scripts]

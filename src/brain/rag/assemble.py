@@ -1,8 +1,7 @@
-"""Context assembly: token-budget trim + file:line citations + JSON (C6/C7/C8).
+"""上下文拼装：token 预算裁剪 + file:line 引用 + JSON。
 
-Turns ranked :class:`ScoredChunk` results into a stable JSON payload suitable
-to feed a prompt or a skill. Token counting is a dependency-free heuristic
-(~4 chars/token); swap in a real tokenizer later if precision matters.
+将排序后的 :class:`ScoredChunk` 结果转为稳定的 JSON 结构，
+可直接喂给 prompt 或 skill。token 计数为无依赖启发式（~4 字符/token）。
 """
 
 from __future__ import annotations
@@ -14,17 +13,15 @@ from brain.rag.schema import Chunk
 
 
 def estimate_tokens(text: str) -> int:
-    """Cheap, dependency-free token estimate (~4 characters per token)."""
+    """廉价的无依赖 token 估算（~4 字符/token）。"""
     return max(1, (len(text) + 3) // 4)
 
 
 def chunk_tokens(chunk: Chunk) -> int:
-    """Token cost of a chunk *as emitted* — content plus the metadata fields.
+    """chunk *输出时*的 token 开销——内容加上元数据字段。
 
-    The payload entry carries the file path, qualified name and signature
-    alongside the body, so budgeting on ``content`` alone under-counts. This
-    estimates the whole entry's textual footprint (slightly conservative, which
-    is the safe direction for a hard prompt budget).
+    输出条目包含 file_path、qualified_name、signature 等字段，
+    仅按 ``content`` 预算会低估。此函数估算整个条目的文本占用量。
     """
     meta = " ".join(
         (chunk.file_path, chunk.qualified_name, chunk.signature, chunk.language, chunk.chunk_type)
@@ -33,13 +30,13 @@ def chunk_tokens(chunk: Chunk) -> int:
 
 
 def assemble(query: str, results: list[ScoredChunk], budget: int | None = None) -> dict[str, Any]:
-    """Build the structured retrieval payload, trimming to a token budget.
+    """构建结构化检索结果，按 token 预算裁剪。
 
-    Results are assumed pre-ranked (highest score first). Chunks are admitted in
-    rank order while they fit; an over-budget chunk is skipped but assembly keeps
-    going so a smaller, lower-ranked chunk can still fill the remaining room. The
-    top result is always included. ``truncated`` flags that at least one chunk
-    was dropped to fit; ``budget=None`` keeps all.
+    结果假定已排好序（分数从高到低）。按排序依次纳入 chunk，
+    直到超出预算；超预算的 chunk 跳过，但后续更小的低排名 chunk
+    仍可填补剩余空间。首条结果始终保留。
+    ``truncated`` 标记是否有 chunk 因预算被丢弃；
+    ``budget=None`` 表示不限制。
     """
     included: list[ScoredChunk] = []
     total = 0
@@ -48,7 +45,7 @@ def assemble(query: str, results: list[ScoredChunk], budget: int | None = None) 
         cost = chunk_tokens(scored.chunk)
         if budget is not None and included and total + cost > budget:
             truncated = True
-            continue  # skip the oversized chunk; a later, smaller one may still fit
+            continue
         included.append(scored)
         total += cost
 

@@ -1,10 +1,7 @@
-"""Retrieval: multi-channel recall + RRF fusion + graph boost (C2/C3/C4).
+"""检索：BM25 + trigram 双通道召回、RRF 融合、依赖图加分。
 
-Two lexical recall channels (BM25 over content, trigram over symbols) are fused
-with Reciprocal Rank Fusion and de-duplicated, then nudged by a lightweight
-dependency-proximity boost from the existing ``_GRAPH.json`` (Aider-style
-structural ranking). Optional synonym expansion and heuristic reranking improve
-natural-language query recall without embeddings.
+两个词汇召回通道（BM25 基于内容，trigram 基于符号名）通过
+Reciprocal Rank Fusion 融合去重，再经 ``_GRAPH.json`` 依赖邻近度加分。
 """
 
 from __future__ import annotations
@@ -19,7 +16,7 @@ from brain.rag.schema import Chunk
 RRF_K = 60
 BM25_WEIGHT = 1.0
 SYMBOL_WEIGHT = 1.0
-GRAPH_BOOST = 0.5 / (RRF_K + 1)  # < a single top rank's RRF contribution
+GRAPH_BOOST = 0.5 / (RRF_K + 1)  # < 单个 top rank 的 RRF 贡献
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,38 +34,16 @@ def search(
     path_glob: str | None = None,
     graph: dict | None = None,
     recall: int | None = None,
-    expand_synonyms: bool = False,
-    enable_rerank: bool = False,
-    custom_synonyms: dict[str, list[str]] | None = None,
-    enable_embed: bool = False,
 ) -> list[ScoredChunk]:
-    """Return the top-``k`` chunks for a query, fused across channels.
+    """返回 top-``k`` chunk，跨通道融合。
 
-    ``language`` / ``path_glob`` filter at the SQL level (C4). ``graph`` enables
-    the dependency-proximity boost (C3 structural signal) when provided.
-
-    ``expand_synonyms`` expands the query with code-domain synonyms before
-    retrieval. ``custom_synonyms`` provides user-defined term→synonyms mapping
-    (takes priority over built-in clusters). ``enable_embed`` enables the
-    embed-model fallback layer (opt-in, requires ``fastembed>=0.4``).
-
-    ``enable_rerank`` applies heuristic score adjustments after fusion.
+    ``language`` / ``path_glob`` 在 SQL 层过滤（C4）。传入 ``graph``
+    启用依赖邻近度加分（C3 结构信号）。
     """
     recall = recall or max(k * 4, 20)
 
-    # 可选：同义词扩展
-    search_query = query
-    if expand_synonyms:
-        from brain.rag.synonyms import expand_query
-
-        search_query = expand_query(
-            query,
-            custom_synonyms=custom_synonyms,
-            enable_embed=enable_embed,
-        )
-
-    bm25_ids = index.query_bm25(search_query, recall, language, path_glob)
-    symbol_ids = index.query_symbol(search_query, recall, language, path_glob)
+    bm25_ids = index.query_bm25(query, recall, language, path_glob)
+    symbol_ids = index.query_symbol(query, recall, language, path_glob)
 
     scores = rrf_fuse([bm25_ids, symbol_ids], [BM25_WEIGHT, SYMBOL_WEIGHT])
     if not scores:
@@ -78,23 +53,17 @@ def search(
 
     ranked_ids = sorted(scores, key=lambda cid: (-scores[cid], cid))[:k]
     chunks = {c.chunk_id: c for c in index.get_chunks(ranked_ids)}
-    results = [
+    return [
         ScoredChunk(chunk=chunks[cid], score=round(scores[cid], 6))
         for cid in ranked_ids
         if cid in chunks
     ]
 
-    # 可选：启发式重排
-    if enable_rerank:
-        results = rerank_heuristic(results, query)
-
-    return results
-
 
 def rrf_fuse(
     ranked_lists: list[list[str]], weights: list[float], k: int = RRF_K
 ) -> dict[str, float]:
-    """Reciprocal Rank Fusion: chunk_id -> fused score (de-dups across lists)."""
+    """Reciprocal Rank Fusion：chunk_id → 融合分数（跨列表去重）。"""
     scores: dict[str, float] = {}
     for ids, weight in zip(ranked_lists, weights, strict=True):
         for rank, chunk_id in enumerate(ids, start=1):
@@ -103,7 +72,7 @@ def rrf_fuse(
 
 
 def apply_graph_boost(scores: dict[str, float], graph: dict) -> None:
-    """Boost chunks whose module neighbors the top hit's module (in place)."""
+    """对与 top hit 模块相邻的 chunk 加分（原地修改）。"""
     if not scores:
         return
     module_by_source = {
@@ -180,7 +149,7 @@ def rerank_heuristic(scored: list[ScoredChunk], query: str) -> list[ScoredChunk]
 
 
 def _adjacency(edges: list[dict]) -> dict[str, set[str]]:
-    """Undirected module adjacency from graph edges."""
+    """从 graph edges 构建无向模块邻接表。"""
     adj: dict[str, set[str]] = {}
     for edge in edges:
         src, dst = edge.get("from"), edge.get("to")
@@ -192,7 +161,7 @@ def _adjacency(edges: list[dict]) -> dict[str, set[str]]:
 
 
 def load_graph(project_kb_path: Path) -> dict | None:
-    """Load ``_GRAPH.json`` from a project's knowledge base, if present."""
+    """从项目知识库加载 ``_GRAPH.json``（如存在）。"""
     graph_file = project_kb_path / "_GRAPH.json"
     if not graph_file.exists():
         return None

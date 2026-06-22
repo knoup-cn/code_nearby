@@ -93,9 +93,11 @@ def expand_query(
         enable_embed: 启用 embed 模型兜底（需 ``fastembed>=0.4``）。
         _trace: 传入一个空 list，调用后会被填入每层的命中详情::
 
-            [{"term": "middleware", "layer": "embed", "synonyms": ["handler", "interceptor"], "scores": [0.82, 0.78]},
+            [{"term": "middleware", "layer": "embed",
+              "synonyms": ["handler", "interceptor"], "scores": [0.82, 0.78]},
              {"term": "auth", "layer": "custom", "synonyms": ["sso", "kerberos"]},
-             {"term": "fetch", "layer": "cluster", "synonyms": ["get", "retrieve", "load"]}]
+             {"term": "fetch", "layer": "cluster",
+              "synonyms": ["get", "retrieve", "load"]}]
 
     Returns:
         扩展后的查询字符串（可能等于原查询）。
@@ -293,7 +295,7 @@ def load_custom_synonyms(path: str | Path) -> dict[str, list[str]] | None:
     if yaml is not None:
         try:
             data = yaml.safe_load(raw)
-        except Exception:  # yaml.YAMLError or AttributeError
+        except Exception:  # yaml.YAMLError 或 AttributeError
             pass
 
     if data is None:

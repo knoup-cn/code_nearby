@@ -1,9 +1,6 @@
-"""Unified chunk schema for the code-RAG index (G2/G3).
+"""语言无关的代码 RAG chunk schema。
 
-One language-agnostic record per code symbol. Language differences are confined
-to the chunker (tree-sitter grammars); storage and retrieval only ever see this
-shape. ``content`` holds the symbol's real source body (fed to the LLM), unlike
-the Goal-1 Markdown summaries which deliberately store signatures only.
+每个代码符号一条记录。``content`` 存储真实源码供 LLM 上下文使用。
 """
 
 from __future__ import annotations
@@ -12,32 +9,28 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any
 
-# Chunk granularities. A file yields a "module" chunk (imports + docstring +
-# top-level constants) plus one chunk per function / class / method.
-CHUNK_TYPES = ("module", "function", "class", "method")
-
 
 @dataclass(frozen=True, slots=True)
 class Chunk:
-    """A single retrievable code unit with its structural metadata."""
+    """单个可检索代码单元及其结构化元数据。"""
 
-    chunk_id: str  # stable id, unique within an index
-    file_path: str  # repo-relative, posix
-    language: str  # e.g. "python"
-    chunk_type: str  # one of CHUNK_TYPES
-    symbol: str  # leaf name (e.g. "analyze_file")
-    qualified_name: str  # in-file scope path (e.g. "Foo.method")
-    parent_class: str | None  # enclosing class name, if any (G2 "所属类")
-    start_line: int  # 1-indexed, inclusive (includes decorators)
-    end_line: int  # 1-indexed, inclusive — full span, never truncated
-    imports: tuple[str, ...]  # module-level imports in scope (file-scoped)
-    signature: str  # decorators + def/class header, whitespace-collapsed
+    chunk_id: str  # 稳定 id，索引内唯一
+    file_path: str  # 仓库相对路径，posix 格式
+    language: str  # 如 "python"
+    chunk_type: str  # "module" / "function" / "class" / "method"
+    symbol: str  # 叶子名（如 "analyze_file"）
+    qualified_name: str  # 文件内作用域路径（如 "Foo.method"）
+    parent_class: str | None  # 所属类名（G2 "所属类"），无则为 None
+    start_line: int  # 1-indexed，含装饰器
+    end_line: int  # 1-indexed，完整 span，永不被截断
+    imports: tuple[str, ...]  # 模块级 import 列表
+    signature: str  # 装饰器 + def/class 头部，空白已压缩
     docstring: str | None
-    content: str  # source body of the symbol
-    content_hash: str  # sha256(content) — G4 incremental key
+    content: str  # 符号的源码体
+    content_hash: str  # sha256(content) — G4 增量更新 key
 
     def to_row(self) -> dict[str, Any]:
-        """Flatten to a SQLite-friendly row (imports joined by newline)."""
+        """展平为 SQLite 行（imports 以换行符连接）。"""
         return {
             "chunk_id": self.chunk_id,
             "file_path": self.file_path,
@@ -57,7 +50,7 @@ class Chunk:
 
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Chunk:
-        """Rebuild a Chunk from a SQLite row produced by :meth:`to_row`."""
+        """从 :meth:`to_row` 产出的 SQLite 行重建 Chunk。"""
         imports_raw = row["imports"] or ""
         return cls(
             chunk_id=row["chunk_id"],
@@ -78,11 +71,11 @@ class Chunk:
 
 
 def compute_content_hash(content: str) -> str:
-    """SHA256 hex of chunk content — the incremental-rebuild key (G4)."""
+    """chunk 内容的 SHA256 十六进制 — 增量重建 key（G4）。"""
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def base_chunk_id(file_path: str, qualified_name: str) -> str:
-    """Base chunk id; the chunker appends ``:start_line`` on collision."""
+    """基础 chunk id；冲突时 chunker 追加 ``:start_line``。"""
     suffix = qualified_name or "<module>"
     return f"{file_path}::{suffix}"

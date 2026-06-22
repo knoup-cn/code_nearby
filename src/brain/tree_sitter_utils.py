@@ -1,8 +1,4 @@
-"""共享 tree-sitter 工具函数。
-
-所有与解析器、CST 遍历、文本提取相关的通用逻辑集中在此，
-供 chunker.py 和 graph.py 共同使用。
-"""
+"""共享 tree-sitter 工具函数——解析器、CST 遍历、文本提取、import 收集、签名提取。"""
 
 from __future__ import annotations
 
@@ -32,7 +28,7 @@ class SymbolInfo:
     """
 
     name: str
-    kind: str  # "function" | "method" | "class"
+    kind: str  # "function" / "method" / "class"
     scope: tuple[str, ...]  # 父级 scope 路径，如 ("ClassName",)
     span_node: Node  # 含装饰器的完整 span 节点
     inner_node: Node  # 实际 def/class 声明节点
@@ -53,8 +49,7 @@ def walk_symbols(
 
     这是 chunker 和 graph 的**共享 CST 遍历**。
     调用者通过 ``SymbolInfo`` 的 ``span_node`` / ``inner_node`` 字段
-    按需调用 ``extract_parameters``、``extract_signature``、
-    ``get_docstring`` 等 helper 提取各自所需数据。
+    按需调用 ``extract_signature``、``get_docstring`` 等 helper。
 
     Args:
         scope_node: 起始 scope 的 CST 节点（通常为 root_node 或类 body）
@@ -172,40 +167,6 @@ def is_async_def(node: Node) -> bool:
     """判断函数/方法定义是否包含 async 关键字。"""
     return any(child.type == "async" for child in node.children)
 
-
-def extract_parameters(func_node: Node, src: bytes) -> list[str]:
-    """提取函数参数列表（含类型注解和默认值）。
-
-    示例: ["self", "x: int", "y = 1"]
-    """
-    params = func_node.child_by_field_name("parameters")
-    if params is None:
-        return []
-    args: list[str] = []
-    for child in params.named_children:
-        # 跳过分隔符和标点
-        if child.type in (",", "(", ")", "=>", "*/", "*"):
-            continue
-        args.append(node_text(src, child))
-    return args
-
-
-def extract_return_type(func_node: Node, src: bytes) -> str | None:
-    """提取函数返回类型注解文本，无则返回 None。"""
-    rt = func_node.child_by_field_name("return_type")
-    return node_text(src, rt) if rt is not None else None
-
-
-def extract_base_classes(class_node: Node, src: bytes) -> list[str]:
-    """提取基类/父类名称列表。"""
-    superclasses = class_node.child_by_field_name("superclasses")
-    if superclasses is None:
-        return []
-    return [
-        node_text(src, c)
-        for c in superclasses.named_children
-        if c.type not in (",", "(", ")", ":", "extends", "implements")
-    ]
 
 
 # ======================================================================
@@ -350,27 +311,8 @@ def extract_signature(
     source_lines: list[str],
     span_node: Node,
     inner_node: Node,
-    format: str = "compact",
 ) -> str:
-    """提取函数/类签名（统一实现）。
-
-    Args:
-        source_lines: 源码行列表
-        span_node: 包含装饰器的外层节点
-        inner_node: 实际的函数/类定义节点
-        format: "compact"（压缩空白为单行）或 "multiline"（保留格式）
-
-    Returns:
-        签名文本（如 "def foo(x: int) -> str:"）
-    """
-    if format == "compact":
-        return _extract_signature_compact(source_lines, span_node, inner_node)
-    else:
-        return _extract_signature_multiline(source_lines, span_node, inner_node)
-
-
-def _extract_signature_compact(source_lines: list[str], span_node: Node, inner_node: Node) -> str:
-    """提取签名并压缩为单行（chunker 风格）。
+    """提取函数/类签名，压缩空白为单行。
 
     使用 body 子节点确定签名结束位置，适配所有语言：
     - Python：签名以 ':' 结尾，body 从下一行开始
@@ -378,47 +320,19 @@ def _extract_signature_compact(source_lines: list[str], span_node: Node, inner_n
     """
     start_line = span_node.start_point[0]
 
-    # 使用 body 子节点确定签名结束位置
     body = inner_node.child_by_field_name("body")
     if body is not None:
-        # 签名结束于 body 开始位置（exclusive upper bound）
         sig_end = body.start_point[0]
-        # 确保至少捕获一行（TS/JS body 可能与声明同行）
         sig_end = max(sig_end, start_line + 1)
     else:
-        # 无 body（抽象方法、接口声明等）：使用整个节点
         sig_end = inner_node.end_point[0] + 1
 
-    # 提取签名行
     signature_lines = []
     for i in range(start_line, min(sig_end, len(source_lines))):
         line = source_lines[i].strip()
         signature_lines.append(line)
 
-    # 合并为单行，压缩空白
     header = " ".join(signature_lines)
     header = re.sub(r"\s+", " ", header).strip()
 
     return header if header else ""
-
-
-def _extract_signature_multiline(source_lines: list[str], span_node: Node, inner_node: Node) -> str:
-    """提取签名并保留多行格式。
-
-    使用 body 子节点确定签名结束位置（同 compact 变体逻辑）。
-    """
-    start_line = span_node.start_point[0]
-
-    body = inner_node.child_by_field_name("body")
-    if body is not None:
-        sig_end = body.start_point[0]
-        sig_end = max(sig_end, start_line + 1)
-    else:
-        sig_end = inner_node.end_point[0] + 1
-
-    signature_lines = []
-    for i in range(start_line, min(sig_end, len(source_lines))):
-        line = source_lines[i].strip()
-        signature_lines.append(line)
-
-    return " ".join(signature_lines)

@@ -27,7 +27,7 @@ def analyze(project_path: str | Path = ".", *, full: bool = False) -> dict[str, 
     这是程序化入口，等价于 CLI 的 ``brain analyze .``。
 
     Args:
-        project_path: 源 Git 仓库路径，默认当前目录。
+        project_path: 源项目路径，默认当前目录。
         full: 是否强制全量重建（默认增量）。
 
     Returns:
@@ -59,6 +59,7 @@ def search(
     language: str | None = None,
     path_glob: str | None = None,
     budget: int | None = None,
+    kb_name: str | None = None,
 ) -> dict[str, Any]:
     """检索 RAG 索引，返回 token 预算感知的结构化代码片段。
 
@@ -69,6 +70,7 @@ def search(
         language: 按语言过滤（如 ``"python"``）。
         path_glob: 按文件路径 glob 过滤（如 ``"src/**/*.py"``）。
         budget: token 预算上限（None = 不限制）。
+        kb_name: 知识库名称（需与 analyze 时的 ``--kb-name`` 一致）。
 
     Returns:
         {
@@ -95,7 +97,7 @@ def search(
 
     kb_path = config.get_kb_path()
     target = Path(project_path).resolve()
-    project_kb_path = storage.get_project_kb_path(kb_path, target)
+    project_kb_path = storage.get_project_kb_path(kb_path, target, kb_name=kb_name)
     index_file = project_kb_path / ".rag" / "index.sqlite3" if project_kb_path else None
 
     if index_file is None or not index_file.exists():

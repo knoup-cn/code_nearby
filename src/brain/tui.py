@@ -1,4 +1,4 @@
-"""TUI (Text User Interface) mode for Brain."""
+"""Brain TUI（Text User Interface）模式。"""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from brain.operations.config import clear_config
 
 
 class ConfirmDialog(ModalScreen):
-    """Confirmation dialog."""
+    """确认对话框。"""
 
     BINDINGS = [("escape", "dismiss", "Cancel")]
 
@@ -33,12 +33,12 @@ class ConfirmDialog(ModalScreen):
         self.dismiss(event.button.id == "confirm")
 
     def action_dismiss(self) -> None:
-        """Handle Escape key."""
+        """处理 Escape 键。"""
         self.dismiss(False)
 
 
 class BrainApp(App):
-    """Brain knowledge base TUI."""
+    """Brain 知识库 TUI。"""
 
     CSS = """
     Screen {
@@ -122,7 +122,7 @@ class BrainApp(App):
         self._refresh()
 
     def watch_status(self, new_status: str) -> None:
-        """Update status label when reactive variable changes."""
+        """当 reactive 变量变化时更新状态标签。"""
         try:
             label = self.query_one("#status", Label)
             label.update(new_status)
@@ -130,13 +130,13 @@ class BrainApp(App):
             pass
 
     def action_blur(self) -> None:
-        """Remove focus from current widget."""
+        """移除当前焦点。"""
         self.screen.set_focus(None)
 
     def _refresh(self) -> None:
-        """Refresh UI showing knowledge base status."""
+        """刷新 UI 显示知识库状态。"""
         container = self.query_one("#main", ScrollableContainer)
-        # Remove dynamic content only (keep title and status)
+        # 仅移除动态内容（保留标题和状态）
         for widget in list(container.children)[2:]:
             widget.remove()
 
@@ -144,7 +144,7 @@ class BrainApp(App):
         self._update_status()
 
     def _show_dashboard(self, container: ScrollableContainer) -> None:
-        """Show knowledge base dashboard."""
+        """显示知识库仪表盘。"""
         kb_path = config.get_kb_path()
 
         container.mount(
@@ -158,12 +158,12 @@ class BrainApp(App):
         )
 
     def _update_status(self) -> None:
-        """Update status bar."""
+        """更新状态栏。"""
         kb_path = config.get_kb_path()
         self.status = f"KB: {kb_path.name} ({kb_path})"
 
     def _set_status(self, msg: str, error: bool = False) -> None:
-        """Set status message with styling."""
+        """设置状态消息（含样式）。"""
         self.status = msg
         label = self.query_one("#status", Label)
         label.set_class(error, "err")
@@ -181,14 +181,14 @@ class BrainApp(App):
             )
 
     def _handle_change_path(self) -> None:
-        """Prompt for a new KB path."""
+        """弹出 KB 路径输入对话框。"""
         self.push_screen(
             _PathInputDialog(),
             lambda new_path: self._apply_new_path(new_path),
         )
 
     def _apply_new_path(self, new_path: str | None) -> None:
-        """Apply the new KB path."""
+        """应用新的 KB 路径。"""
         if not new_path:
             return
         path = Path(new_path.strip()).expanduser().resolve()
@@ -202,7 +202,7 @@ class BrainApp(App):
         self._set_status(f"✓ KB path updated: {path}")
 
     def _handle_reset(self, confirmed: bool) -> None:
-        """Reset KB path to default."""
+        """重置 KB 路径为默认值。"""
         if not confirmed:
             return
         clear_config()
@@ -211,7 +211,7 @@ class BrainApp(App):
 
 
 class _PathInputDialog(ModalScreen):
-    """Dialog to input a new KB path."""
+    """KB 路径输入对话框。"""
 
     BINDINGS = [("escape", "dismiss", "Cancel")]
 
@@ -230,10 +230,10 @@ class _PathInputDialog(ModalScreen):
             self.dismiss(None)
 
     def action_dismiss(self) -> None:
-        """Handle Escape key."""
+        """处理 Escape 键。"""
         self.dismiss(None)
 
 
 def run() -> None:
-    """Launch TUI interface."""
+    """启动 TUI 界面。"""
     BrainApp().run()

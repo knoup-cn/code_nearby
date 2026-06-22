@@ -1,15 +1,6 @@
-"""Tree-sitter 源码分块——将源文件切分为符号级 Chunk 记录（G1）。
+"""Tree-sitter 源码分块——将源文件切分为符号级 Chunk 记录。
 
-每个文件产出不重叠的 chunk：
-
-- 一个 ``module`` chunk：import + 模块 docstring + 顶层常量
-- 每个模块级函数一个 ``function`` chunk（完整源码，含装饰器）
-- 每个类一个 ``class`` chunk（类头部 + docstring + 类级属性，不含方法体）
-- 每个方法一个 ``method`` chunk（完整源码）；嵌套类递归处理
-
-嵌套函数保留在父函数的 chunk 内（不截断）。
-新增语言 = 注册后缀 + 在 ``get_parser`` 中加入 parser 即可复用同一套节点遍历逻辑；
-chunk schema 不变（G3）。
+每种语言注册后缀 + parser 即可复用同一套节点遍历逻辑；chunk schema 不变。
 """
 
 from __future__ import annotations
@@ -75,7 +66,7 @@ def chunk_file(file_path: Path, project_root: Path) -> list[Chunk]:
                     start_line=info.start_line,
                     end_line=info.end_line,
                     signature=extract_signature(
-                        builder.source_lines, info.span_node, info.inner_node, format="compact"
+                        builder.source_lines, info.span_node, info.inner_node
                     ),
                     docstring=get_docstring(src, info.inner_node),
                     content=node_text(src, info.span_node),
@@ -94,7 +85,7 @@ def chunk_file(file_path: Path, project_root: Path) -> list[Chunk]:
                     start_line=info.start_line,
                     end_line=info.start_line + preamble_text.count("\n"),
                     signature=extract_signature(
-                        builder.source_lines, info.span_node, info.inner_node, format="compact"
+                        builder.source_lines, info.span_node, info.inner_node
                     ),
                     docstring=get_docstring(src, info.inner_node),
                     content=preamble_text,

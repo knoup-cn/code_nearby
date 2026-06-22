@@ -17,10 +17,7 @@ A codebase analysis and knowledge management tool with both TUI and CLI interfac
 # Create the virtual environment and install dependencies from uv.lock
 uv sync
 
-# Initialize knowledge base
-uv run brain init
-
-# Analyze a source Git repository
+# Analyze a source directory
 uv run brain analyze .
 # or simply
 uv run brain .
@@ -40,12 +37,11 @@ See [Quick Start Guide](./docs/QUICKSTART.md) for detailed instructions.
 ## 📁 Knowledge Base Structure
 
 ```
-~/brain-vault/
-└── octocat/
-    └── hello-world/
-        ├── _GRAPH.json              # 依赖图
-        └── .rag/
-            └── index.sqlite3        # RAG 索引
+~/.brain/
+└── my-project/
+    ├── _GRAPH.json              # 依赖图
+    └── .rag/
+        └── index.sqlite3        # RAG 索引
 ```
 
 ## 🎯 Use Cases
@@ -80,24 +76,6 @@ brain sync         # Manually sync knowledge base to remote
 brain --help       # Show all commands
 ```
 
-### Synchronization Options
-
-**Auto-sync during analysis:**
-```bash
-brain analyze . --sync
-```
-This will analyze your code and automatically commit and push changes to the knowledge base repository.
-
-`brain analyze` reads Git state from the source repository you pass as its target. `brain init`
-stores the knowledge base Git repository URL and clones that repository to the configured local
-path.
-
-**Manual sync:**
-```bash
-brain sync
-```
-Commits and pushes any pending changes in the knowledge base. Useful after manual edits or multiple analyze operations.
-
 ## 🧪 Development
 
 ```bash
@@ -112,7 +90,7 @@ uv run ruff check .   # Lint code
 - **CLI**: `src/brain/cli.py` - Typer-based commands
 - **Analyzer**: `src/brain/analyzer.py` - AST-based code analysis
 - **Storage**: `src/brain/storage.py` - Knowledge base I/O
-- **Git Utils**: `src/brain/git_utils.py` - Git integration
+- **FS Utils**: `src/brain/fs_utils.py` - File system discovery
 
 See [AGENTS.md](./AGENTS.md) for engineering guidelines.
 
@@ -121,7 +99,7 @@ See [AGENTS.md](./AGENTS.md) for engineering guidelines.
 - **CLI Framework**: [Typer](https://typer.tiangolo.com/)
 - **TUI Framework**: [Textual](https://textual.textualize.io/)
 - **Analysis**: Python `ast` module
-- **Knowledge Base**: Git + RAG (SQLite)
+- **Knowledge Base**: RAG (SQLite FTS5)
 
 ## 🗺️ Roadmap
 
