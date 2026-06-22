@@ -8,7 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from brain import git_utils, operations
+from brain import git_utils
+from brain.operations import analysis, sync
 
 
 @pytest.fixture
@@ -206,14 +207,14 @@ class TestSyncKnowledgeBase:
         kb_path = tmp_path / "not_a_repo"
         kb_path.mkdir()
 
-        result = operations.sync_knowledge_base(kb_path, mock_project_repo, "test")
+        result = sync.sync_knowledge_base(kb_path, mock_project_repo, "test")
 
         assert result["success"] is False
         assert "not a git repository" in result["error"]
 
     def test_sync_no_changes(self, mock_kb_repo: Path, mock_project_repo: Path) -> None:
         """Test sync succeeds with no changes."""
-        result = operations.sync_knowledge_base(mock_kb_repo, mock_project_repo, "test")
+        result = sync.sync_knowledge_base(mock_kb_repo, mock_project_repo, "test")
 
         assert result["success"] is True
         assert result["commit"] is None
@@ -227,7 +228,7 @@ class TestSyncKnowledgeBase:
         (mock_kb_repo / "test_org" / "test_project" / "module.md").parent.mkdir(parents=True)
         (mock_kb_repo / "test_org" / "test_project" / "module.md").write_text("# Module\n")
 
-        result = operations.sync_knowledge_base(
+        result = sync.sync_knowledge_base(
             mock_kb_repo, mock_project_repo, "1 added, 0 modified, 0 deleted"
         )
 
@@ -244,7 +245,7 @@ class TestSyncKnowledgeBase:
         """Test sync creates correct commit message."""
         (mock_kb_repo / "new.md").write_text("# New\n")
 
-        operations.sync_knowledge_base(
+        sync.sync_knowledge_base(
             mock_kb_repo, mock_project_repo, "2 added, 1 modified, 0 deleted"
         )
 
@@ -267,7 +268,7 @@ class TestSyncKnowledgeBase:
         """Test sync with successful push."""
         (mock_kb_repo / "new.md").write_text("# New\n")
 
-        result = operations.sync_knowledge_base(mock_kb_repo, mock_project_repo, "test")
+        result = sync.sync_knowledge_base(mock_kb_repo, mock_project_repo, "test")
 
         assert result["success"] is True
         assert result["pushed"] is True
@@ -278,20 +279,20 @@ class TestSyncKnowledgeBase:
 class TestAnalyzeWithSync:
     """Test analyze_project with auto_sync enabled."""
 
-    @patch("brain.operations.sync_knowledge_base")
+    @patch("brain.operations.sync.sync_knowledge_base")
     def test_analyze_with_sync_disabled(
         self, mock_sync: MagicMock, mock_kb_repo: Path, mock_project_repo: Path
     ) -> None:
         """Test analyze without auto_sync doesn't call sync."""
         with patch("brain.config.load_config", return_value={"local_path": str(mock_kb_repo)}):
             # This will fail but we're only checking sync wasn't called
-            operations.analyze_project(mock_project_repo, auto_sync=False)
+            analysis.analyze_project(mock_project_repo, auto_sync=False)
 
         mock_sync.assert_not_called()
 
-    @patch("brain.operations.sync_knowledge_base")
-    @patch("brain.operations.storage")
-    @patch("brain.operations.analyzer")
+    @patch("brain.operations.sync.sync_knowledge_base")
+    @patch("brain.storage")
+    @patch("brain.analyzer")
     def test_analyze_with_sync_enabled(
         self,
         mock_analyzer: MagicMock,
@@ -330,7 +331,7 @@ class TestAnalyzeWithSync:
                 capture_output=True,
             )
 
-            result = operations.analyze_project(mock_project_repo, auto_sync=True)
+            result = analysis.analyze_project(mock_project_repo, auto_sync=True)
 
         assert result["synced"] is True
         assert result["sync_commit"] == "abc123"
@@ -360,7 +361,7 @@ class TestAnalyzeIncremental:
 
         with patch("brain.config.load_config", return_value={"local_path": str(mock_kb_repo)}):
             # First (full) analysis writes the markdown.
-            operations.analyze_project(mock_project_repo)
+            analysis.analyze_project(mock_project_repo)
             assert md.exists()
 
             # Delete and commit, then re-analyze incrementally.
@@ -376,7 +377,7 @@ class TestAnalyzeIncremental:
                 check=True,
                 capture_output=True,
             )
-            result = operations.analyze_project(mock_project_repo)
+            result = analysis.analyze_project(mock_project_repo)
 
         assert result["success"] is True
         assert result["deleted"] == 1

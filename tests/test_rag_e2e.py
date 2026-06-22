@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from brain import cli, operations
+from brain import cli, config
 from brain.rag.assemble import assemble, chunk_tokens
 from brain.rag.chunker import chunk_file
 from brain.rag.index import RagIndex
@@ -107,7 +107,7 @@ def wired_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     kb = tmp_path / "kb"
     kb.mkdir()
     monkeypatch.setattr(
-        operations.config, "load_config", lambda: {"local_path": str(kb), "git_repo": "x"}
+        config, "load_config", lambda: {"local_path": str(kb), "git_repo": "x"}
     )
     # cli.operations and brain.storage both read config via the same module
     monkeypatch.chdir(repo)
