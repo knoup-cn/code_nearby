@@ -1,17 +1,13 @@
-"""SQLite FTS5 index for code chunks (G9 + persistence + G4 manifest).
+"""SQLite FTS5 代码 chunk 索引。
 
-Stdlib ``sqlite3`` only — no vector DB, no external service. One ``.sqlite3``
-file per project holds:
+仅用标准库 ``sqlite3``——无向量数据库、无外部服务。每个项目一个 ``.sqlite3`` 文件：
 
-- ``chunks``      : canonical metadata + source content (source of truth, filters)
-- ``chunks_fts``  : FTS5 BM25 over a tokenized blob (identifiers split so BM25
-                    matches sub-tokens) — the primary lexical recall (C2)
-- ``chunks_tri``  : FTS5 trigram over symbol/qualified-name for exact/substring
-                    symbol matching
-- ``meta``        : index-level key/value (schema version)
+- ``chunks``      : 规范元数据 + 源码内容
+- ``chunks_fts``  : FTS5 BM25 基于分词 blob（标识符拆分以支持子 token 匹配）
+- ``chunks_tri``  : FTS5 trigram 基于 symbol/qualified-name 用于子串匹配
+- ``meta``        : 索引级 key/value（schema 版本）
 
-The ``chunks`` table doubles as the incremental manifest: per-file
-``chunk_id -> content_hash`` lets the orchestrator skip unchanged chunks (G4).
+``chunks`` 表同时作为增量 manifest，通过 ``chunk_id → content_hash`` 实现。
 """
 
 from __future__ import annotations
@@ -55,19 +51,62 @@ _COLUMNS = (
     "content, content_hash"
 )
 
-# split camelCase / PascalCase at case boundaries (zero-width)
+# 在大小写边界拆分 camelCase / PascalCase（零宽断言）
 _CAMEL = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+# CJK bigram 分词：Unicode 区块范围
+_CJK_RANGES = (
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0x3400, 0x4DBF),  # CJK Unified Ideographs Ext A
+    (0xF900, 0xFAFF),  # CJK Compatibility Ideographs
+    (0x20000, 0x2A6DF),  # CJK Unified Ideographs Ext B
+    (0x2F800, 0x2FA1F),  # CJK Compatibility Ideographs Supplement
+)
+
+
+def _is_cjk(ch: str) -> bool:
+    """单字符是否在 CJK 范围内。"""
+    cp = ord(ch)
+    return any(lo <= cp <= hi for lo, hi in _CJK_RANGES)
+
+
+def _cjk_bigrams(text: str) -> list[str]:
+    """从文本中提取 CJK 连续串，生成重叠 bigram。
+
+    "获取用户数据" → ["获取", "取用", "用户", "户数", "数据"]
+    单个 CJK 字符 → [字符本身]
+    """
+    result: list[str] = []
+    chars: list[str] = []
+    for ch in text:
+        if _is_cjk(ch):
+            chars.append(ch)
+        else:
+            if chars:
+                if len(chars) == 1:
+                    result.append(chars[0])
+                else:
+                    for i in range(len(chars) - 1):
+                        result.append(chars[i] + chars[i + 1])
+                chars = []
+    if chars:
+        if len(chars) == 1:
+            result.append(chars[0])
+        else:
+            for i in range(len(chars) - 1):
+                result.append(chars[i] + chars[i + 1])
+    return result
 
 
 class RagIndex:
-    """Persistent FTS5-backed chunk index. Use :meth:`open` to construct."""
+    """基于 FTS5 的持久化 chunk 索引。使用 :meth:`open` 构造。"""
 
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
     @classmethod
     def open(cls, db_path: Path) -> RagIndex:
-        """Open (creating if needed) the index at ``db_path``."""
+        """打开（不存在则创建）位于 ``db_path`` 的索引。"""
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -88,12 +127,12 @@ class RagIndex:
     def __exit__(self, *exc: object) -> None:
         self.close()
 
-    # --- writes ------------------------------------------------------------
+    # --- 写入 ------------------------------------------------------------
 
     def upsert(self, chunks: Iterable[Chunk]) -> int:
-        """Insert or replace chunks (and their FTS rows). Returns count."""
+        """插入或替换 chunk（及对应的 FTS 行）。返回写入数量。"""
         count = 0
-        with self._conn:  # transaction
+        with self._conn:  # 事务
             for chunk in chunks:
                 self._delete_fts(chunk.chunk_id)
                 row = chunk.to_row()
@@ -124,7 +163,7 @@ class RagIndex:
         return len(ids)
 
     def delete_file(self, file_path: str) -> int:
-        """Delete all chunks belonging to a file. Returns count removed."""
+        """删除文件的所有 chunk。返回删除数量。"""
         ids = [
             r["chunk_id"]
             for r in self._conn.execute(
@@ -137,10 +176,10 @@ class RagIndex:
         self._conn.execute("DELETE FROM chunks_fts WHERE chunk_id = ?", (chunk_id,))
         self._conn.execute("DELETE FROM chunks_tri WHERE chunk_id = ?", (chunk_id,))
 
-    # --- manifest / reads --------------------------------------------------
+    # --- manifest / 读取 --------------------------------------------------
 
     def file_manifest(self, file_path: str) -> dict[str, str]:
-        """Return ``{chunk_id: content_hash}`` for a file (incremental key)."""
+        """返回文件的 ``{chunk_id: content_hash}``（增量更新 key）。"""
         return {
             r["chunk_id"]: r["content_hash"]
             for r in self._conn.execute(
@@ -149,11 +188,16 @@ class RagIndex:
             )
         }
 
+    def list_files(self) -> list[str]:
+        """返回索引中所有唯一文件路径。"""
+        rows = self._conn.execute("SELECT DISTINCT file_path FROM chunks")
+        return [r["file_path"] for r in rows]
+
     def count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
 
     def get_chunks(self, chunk_ids: list[str]) -> list[Chunk]:
-        """Fetch full chunks by id, preserving the input order."""
+        """按 id 批量获取完整 chunk，保持输入顺序。"""
         if not chunk_ids:
             return []
         placeholders = ",".join("?" * len(chunk_ids))
@@ -164,12 +208,12 @@ class RagIndex:
         by_id = {r["chunk_id"]: Chunk.from_row(dict(r)) for r in rows}
         return [by_id[cid] for cid in chunk_ids if cid in by_id]
 
-    # --- queries -----------------------------------------------------------
+    # --- 查询 -----------------------------------------------------------
 
     def query_bm25(
         self, text: str, limit: int, language: str | None = None, path_glob: str | None = None
     ) -> list[str]:
-        """BM25 recall over the tokenized blob; best-first chunk ids (C2/C4)."""
+        """基于分词 blob 的 BM25 召回；best-first chunk ids（C2/C4）。"""
         match = _fts_query(text)
         if match is None:
             return []
@@ -178,9 +222,9 @@ class RagIndex:
     def query_symbol(
         self, text: str, limit: int, language: str | None = None, path_glob: str | None = None
     ) -> list[str]:
-        """Trigram substring recall over symbol/qualified-name (C4-aware)."""
+        """基于 symbol/qualified-name 的 trigram 子串召回。"""
         needle = text.strip()
-        if len(needle) < 3:  # trigram tokenizer needs >= 3 chars
+        if len(needle) < 3:  # trigram tokenizer 需要 >= 3 个字符
             return []
         match = '"' + needle.replace('"', "") + '"'
         return self._fts_search("chunks_tri", match, limit, language, path_glob)
@@ -205,16 +249,15 @@ class RagIndex:
         return [r["chunk_id"] for r in self._conn.execute(sql, params)]
 
 
-# --- text helpers ----------------------------------------------------------
+# --- 文本辅助 ---------------------------------------------------------
 
 
 def _normalize_glob(pattern: str) -> str:
-    """Map shell-style ``**`` onto SQLite GLOB semantics.
+    """将 shell 风格 ``**`` 映射到 SQLite GLOB 语义。
 
-    SQLite ``GLOB`` has no ``**`` and its single ``*`` already spans ``/``. A
-    recursive ``src/**/*.py`` must therefore collapse to ``src/*.py`` so it
-    matches both ``src/a.py`` and ``src/sub/b.py``; left as-is the trailing
-    ``/`` would exclude top-level files.
+    SQLite ``GLOB`` 无 ``**``，其单个 ``*`` 已能跨 ``/`` 匹配。
+    递归 ``src/**/*.py`` 需折叠为 ``src/*.py`` 才能同时匹配
+    ``src/a.py`` 和 ``src/sub/b.py``。
     """
     return pattern.replace("**/", "*").replace("**", "*")
 
@@ -240,11 +283,20 @@ def _search_blob(chunk: Chunk) -> str:
     extras = _split_identifiers(
         f"{chunk.symbol} {chunk.qualified_name} {imports_text} {chunk.content}"
     )
-    return f"{base}\n{extras}" if extras else base
+    # CJK bigram 扩展（从 docstring + content 提取）
+    cjk_source = f"{chunk.docstring or ''}\n{chunk.content}"
+    cjk_extras = _cjk_bigrams(cjk_source)
+
+    parts = [base]
+    if extras:
+        parts.append(extras)
+    if cjk_extras:
+        parts.append(" ".join(cjk_extras))
+    return "\n".join(parts)
 
 
 def _split_identifiers(text: str) -> str:
-    """Emit camelCase sub-tokens so BM25 matches identifier fragments."""
+    """产出 camelCase 子 token，使 BM25 能匹配标识符片段。"""
     pieces: list[str] = []
     for raw in re.findall(r"[A-Za-z][A-Za-z0-9]*", text):
         parts = [p for p in _CAMEL.split(raw) if p]
@@ -254,7 +306,7 @@ def _split_identifiers(text: str) -> str:
 
 
 def _terms(text: str) -> list[str]:
-    """Query → unique lowercased terms (snake_case + camelCase split)."""
+    """Query → 唯一小写词项（snake_case + camelCase + CJK bigram 拆分）。"""
     out: list[str] = []
     for raw in re.findall(r"[A-Za-z0-9_]+", text):
         for piece in re.split(r"_+", raw):
@@ -262,6 +314,8 @@ def _terms(text: str) -> list[str]:
                 continue
             out.append(piece)
             out.extend(p for p in _CAMEL.split(piece) if p)
+    # CJK bigram 提取
+    out.extend(_cjk_bigrams(text))
     seen: set[str] = set()
     result: list[str] = []
     for term in out:
@@ -273,7 +327,7 @@ def _terms(text: str) -> list[str]:
 
 
 def _fts_query(text: str) -> str | None:
-    """Build a safe FTS5 MATCH expression (OR of quoted terms)."""
+    """构建安全的 FTS5 MATCH 表达式（带引号词项的 OR）。"""
     terms = _terms(text)
     if not terms:
         return None
