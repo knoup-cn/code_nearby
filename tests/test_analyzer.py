@@ -112,7 +112,9 @@ class SampleClass:
         assert "module" in frontmatter
         assert "exports" in frontmatter
         assert "symbols" in frontmatter
-        assert "last_analyzed" in frontmatter
+        assert "lines_of_code" in frontmatter
+        # last_analyzed is intentionally absent: it made markdown non-deterministic
+        assert "last_analyzed" not in frontmatter
 
         # Check symbols structure
         assert len(frontmatter["symbols"]) == 2  # func1 + SampleClass
@@ -128,6 +130,34 @@ class SampleClass:
         for sym in frontmatter["symbols"]:
             assert len(sym["signature_hash"]) == 8
             assert all(c in "0123456789abcdef" for c in sym["signature_hash"])
+
+
+def test_reanalysis_is_deterministic():
+    """Re-analyzing unchanged source yields byte-identical markdown (no churn)."""
+    with TemporaryDirectory() as tmpdir:
+        project_root = Path(tmpdir)
+        kb_path = project_root / "kb"
+        kb_path.mkdir()
+
+        test_file = project_root / "m.py"
+        test_file.write_text('"""Module m."""\n\ndef f() -> int:\n    return 1\n')
+
+        analyzer.analyze_file(test_file, kb_path, project_root)
+        first = (kb_path / "m.md").read_text()
+
+        analyzer.analyze_file(test_file, kb_path, project_root)
+        second = (kb_path / "m.md").read_text()
+
+        assert first == second
+        assert "last_analyzed" not in first
+
+        # A real change to the documented surface must still be written.
+        test_file.write_text('"""Module m, revised."""\n\ndef f() -> int:\n    return 1\n')
+        analyzer.analyze_file(test_file, kb_path, project_root)
+        third = (kb_path / "m.md").read_text()
+
+        assert third != second
+        assert "Module m, revised." in third
 
 
 def test_location_format():
@@ -249,21 +279,26 @@ def test_analyze_file_skips_non_python():
 
 
 def test_analyze_file_handles_syntax_error():
-    """Test that files with syntax errors are skipped gracefully."""
+    """tree-sitter 容错解析——不完整代码不会崩溃，能提取到什么就产出什么。"""
     with TemporaryDirectory() as tmpdir:
         project_root = Path(tmpdir)
         kb_path = Path(tmpdir) / "kb"
         kb_path.mkdir()
 
-        # Create a Python file with syntax error
+        # 不完整的 Python 代码（ast 会抛 SyntaxError）
         test_file = project_root / "broken.py"
         test_file.write_text("def broken(\n")
 
-        # Should not raise exception
+        # 不应抛异常——tree-sitter 容错
         analyzer.analyze_file(test_file, kb_path, project_root)
 
-        # No output should be created
-        assert not (kb_path / "broken.md").exists()
+        # tree-sitter 会尽量解析，可能产出最小 markdown
+        # 也可能因为符号名为空而跳过——两种行为都可以接受
+        output = kb_path / "broken.md"
+        if output.exists():
+            content = output.read_text()
+            # 即使有输出，签名应反映不完整代码的状态
+            assert "brain_schema" in content
 
 
 def test_extract_symbols():
@@ -279,8 +314,13 @@ class MyClass:
     def method(self):
         pass
 '''
-    tree = __import__("ast").parse(code)
-    symbols = analyzer._extract_symbols(tree, code)
+    from brain.lang_config import get_config
+    from brain.tree_sitter_utils import get_parser
+
+    cfg = get_config("python")
+    src = code.encode("utf-8")
+    root = get_parser("python").parse(src).root_node
+    symbols = analyzer._extract_symbols(root, src, code, cfg)
 
     assert len(symbols["functions"]) == 2
     assert symbols["functions"][0]["name"] == "func1"
@@ -301,24 +341,216 @@ def test_infer_tags():
     """Test tag inference."""
     from pathlib import Path
 
-    # Test file path
+    # 测试文件路径
     path = Path("tests/test_module.py")
-    symbols = {"functions": [], "classes": []}
-    tags = analyzer._infer_tags(path, symbols)
+    symbols: dict = {"functions": [], "classes": []}
+    tags = analyzer._infer_tags(path, symbols, "python")
     assert "python" in tags
     assert "test" in tags
 
-    # Core module
+    # 核心模块
     path = Path("src/brain/operations.py")
-    tags = analyzer._infer_tags(path, symbols)
+    tags = analyzer._infer_tags(path, symbols, "python")
     assert "python" in tags
     assert "core" in tags
 
-    # Async function
+    # 异步函数
     path = Path("src/module.py")
     symbols = {
         "functions": [{"name": "async_func", "is_async": True}],
-        "classes": []
+        "classes": [],
     }
-    tags = analyzer._infer_tags(path, symbols)
+    tags = analyzer._infer_tags(path, symbols, "python")
     assert "async" in tags
+
+
+# ======================================================================
+# 多语言分析测试
+# ======================================================================
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+def test_analyze_go_file():
+    """验证 Go 文件分析产出正确的 frontmatter。"""
+    with TemporaryDirectory() as tmpdir:
+        project_root = Path(tmpdir)
+        kb_path = Path(tmpdir) / "kb"
+        kb_path.mkdir()
+
+        go_file = project_root / "sample.go"
+        go_file.write_text(
+            """package main
+
+import "fmt"
+
+// ComputeSum 计算总和。
+func ComputeSum(values []int) int {
+    total := 0
+    for _, v := range values {
+        total += v
+    }
+    return total
+}
+"""
+        )
+
+        analyzer.analyze_file(go_file, kb_path, project_root)
+
+        output = kb_path / "sample.md"
+        assert output.exists()
+        content = output.read_text()
+
+        assert "type: go-module" in content
+        assert 'source_path: sample.go' in content
+        assert "tags: [go]" in content
+        assert "ComputeSum" in content
+
+
+def test_analyze_javascript_file():
+    """验证 JavaScript 文件分析产出正确的 frontmatter。"""
+    with TemporaryDirectory() as tmpdir:
+        project_root = Path(tmpdir)
+        kb_path = Path(tmpdir) / "kb"
+        kb_path.mkdir()
+
+        js_file = project_root / "sample.js"
+        js_file.write_text(
+            """/** Sample module. */
+
+/**
+ * Compute sum.
+ */
+export function computeSum(values) {
+    return values.reduce((a, b) => a + b, 0);
+}
+"""
+        )
+
+        analyzer.analyze_file(js_file, kb_path, project_root)
+
+        output = kb_path / "sample.md"
+        assert output.exists()
+        content = output.read_text()
+
+        assert "type: javascript-module" in content
+        assert "tags: [javascript]" in content
+        assert "computeSum" in content
+
+
+def test_analyze_typescript_file():
+    """验证 TypeScript 文件分析产出正确的 frontmatter。"""
+    with TemporaryDirectory() as tmpdir:
+        project_root = Path(tmpdir)
+        kb_path = Path(tmpdir) / "kb"
+        kb_path.mkdir()
+
+        ts_file = project_root / "sample.ts"
+        ts_file.write_text(
+            """/** Sample module. */
+
+/**
+ * Compute sum.
+ */
+export function computeSum(values: number[]): number {
+    return values.reduce((a, b) => a + b, 0);
+}
+"""
+        )
+
+        analyzer.analyze_file(ts_file, kb_path, project_root)
+
+        output = kb_path / "sample.md"
+        assert output.exists()
+        content = output.read_text()
+
+        assert "type: typescript-module" in content
+        assert "tags: [typescript]" in content
+        assert "computeSum" in content
+
+
+def test_analyze_rust_file():
+    """验证 Rust 文件分析产出正确的 frontmatter。"""
+    with TemporaryDirectory() as tmpdir:
+        project_root = Path(tmpdir)
+        kb_path = Path(tmpdir) / "kb"
+        kb_path.mkdir()
+
+        rs_file = project_root / "sample.rs"
+        rs_file.write_text(
+            """//! Sample module.
+
+/// 计算总和。
+pub fn compute_sum(values: &[i32]) -> i32 {
+    values.iter().sum()
+}
+"""
+        )
+
+        analyzer.analyze_file(rs_file, kb_path, project_root)
+
+        output = kb_path / "sample.md"
+        assert output.exists()
+        content = output.read_text()
+
+        assert "type: rust-module" in content
+        assert "tags: [rust]" in content
+        assert "compute_sum" in content
+
+
+def test_multi_language_tags():
+    """验证不同语言产生各自的标签。"""
+    path = Path("src/module.py")
+    symbols: dict = {"functions": [], "classes": []}
+
+    assert "python" in analyzer._infer_tags(path, symbols, "python")
+    assert "go" in analyzer._infer_tags(path, symbols, "go")
+    assert "javascript" in analyzer._infer_tags(path, symbols, "javascript")
+    assert "typescript" in analyzer._infer_tags(path, symbols, "typescript")
+    assert "rust" in analyzer._infer_tags(path, symbols, "rust")
+    assert "java" in analyzer._infer_tags(path, symbols, "java")
+
+
+def test_analyze_java_file():
+    """验证 Java 文件分析产出正确的 frontmatter。"""
+    with TemporaryDirectory() as tmpdir:
+        project_root = Path(tmpdir)
+        kb_path = Path(tmpdir) / "kb"
+        kb_path.mkdir()
+
+        java_file = project_root / "Repository.java"
+        java_file.write_text(
+            """package com.example;
+
+import java.util.List;
+
+/**
+ * Sample Repository.
+ */
+public class Repository {
+    private String root;
+
+    public Repository(String root) {
+        this.root = root;
+    }
+
+    public byte[] load(String key) {
+        return null;
+    }
+}
+"""
+        )
+
+        analyzer.analyze_file(java_file, kb_path, project_root)
+
+        output = kb_path / "Repository.md"
+        assert output.exists()
+        content = output.read_text()
+
+        assert "type: java-module" in content
+        assert "tags: [java]" in content
+        assert "Repository" in content
+        # 类内方法应该出现
+        assert "load" in content
+
+

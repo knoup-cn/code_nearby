@@ -23,8 +23,13 @@ def _by_symbol(chunks: list[Chunk], symbol: str) -> Chunk:
 
 
 def test_detect_language() -> None:
+    """验证后缀到语言名的映射。"""
     assert detect_language(Path("a.py")) == "python"
-    assert detect_language(Path("a.rs")) is None
+    assert detect_language(Path("a.rs")) == "rust"
+    assert detect_language(Path("a.go")) == "go"
+    assert detect_language(Path("a.js")) == "javascript"
+    assert detect_language(Path("a.ts")) == "typescript"
+    assert detect_language(Path("a.java")) is None
 
 
 def test_module_chunk_holds_imports_and_docstring(chunks: list[Chunk]) -> None:
@@ -89,8 +94,9 @@ def test_chunk_ids_unique_and_hashes_stable(chunks: list[Chunk]) -> None:
 
 
 def test_unsupported_language_returns_empty(tmp_path: Path) -> None:
-    f = tmp_path / "main.rs"
-    f.write_text("fn main() {}")
+    """不支持的后缀（如 .java）应返回空列表。"""
+    f = tmp_path / "Main.java"
+    f.write_text("class Main {}")
     assert chunk_file(f, tmp_path) == []
 
 
@@ -106,3 +112,90 @@ def test_syntax_error_is_tolerated(tmp_path: Path) -> None:
     f.write_text("def ok():\n    return 1\n\ndef broken(:\n    pass\n")
     result = chunk_file(f, tmp_path)
     assert any(c.symbol == "ok" for c in result)
+
+
+# ======================================================================
+# 多语言 chunking 测试
+# ======================================================================
+
+FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+
+def test_chunk_go_file() -> None:
+    """验证 Go 文件能正常分块（基础支持）。"""
+    go_file = FIXTURES_DIR / "go_pkg" / "sample.go"
+    chunks = chunk_file(go_file, go_file.parent)
+
+    assert len(chunks) > 0
+    # 应包含 module chunk
+    assert any(c.chunk_type == "module" for c in chunks)
+    # ComputeTotal 函数
+    assert any(c.symbol == "ComputeTotal" for c in chunks)
+    # NewRepository 函数
+    assert any(c.symbol == "NewRepository" for c in chunks)
+    # 所有 chunk language 字段应为 "go"
+    assert all(c.language == "go" for c in chunks)
+    # TODO: type_declaration → type_spec 嵌套及 method 归属待后续 PR 深度支持
+
+
+def test_chunk_javascript_file() -> None:
+    """验证 JavaScript 文件能正常分块。"""
+    js_file = FIXTURES_DIR / "js_pkg" / "sample.js"
+    chunks = chunk_file(js_file, js_file.parent)
+
+    assert len(chunks) > 0
+    assert any(c.chunk_type == "module" for c in chunks)
+    assert any(c.symbol == "computeTotal" for c in chunks)
+    assert any(c.symbol == "fetchRemote" for c in chunks)
+    assert any(c.symbol == "Repository" and c.chunk_type == "class" for c in chunks)
+    assert all(c.language == "javascript" for c in chunks)
+
+
+def test_chunk_typescript_file() -> None:
+    """验证 TypeScript 文件能正常分块。"""
+    ts_file = FIXTURES_DIR / "ts_pkg" / "sample.ts"
+    chunks = chunk_file(ts_file, ts_file.parent)
+
+    assert len(chunks) > 0
+    assert any(c.chunk_type == "module" for c in chunks)
+    assert any(c.symbol == "computeTotal" for c in chunks)
+    assert any(c.symbol == "Repository" and c.chunk_type == "class" for c in chunks)
+    assert all(c.language == "typescript" for c in chunks)
+
+
+def test_chunk_rust_file() -> None:
+    """验证 Rust 文件能正常分块（基础支持）。"""
+    rs_file = FIXTURES_DIR / "rust_pkg" / "sample.rs"
+    chunks = chunk_file(rs_file, rs_file.parent)
+
+    assert len(chunks) > 0
+    assert any(c.chunk_type == "module" for c in chunks)
+    assert any(c.symbol == "compute_total" for c in chunks)
+    assert all(c.language == "rust" for c in chunks)
+    # TODO: struct_item 内方法提取及 impl_item 关联待后续 PR 深度支持
+
+
+def test_multi_language_detection() -> None:
+    """验证各种后缀的语言检测。"""
+    assert detect_language(Path("main.go")) == "go"
+    assert detect_language(Path("app.js")) == "javascript"
+    assert detect_language(Path("app.jsx")) == "javascript"
+    assert detect_language(Path("app.ts")) == "typescript"
+    assert detect_language(Path("main.rs")) == "rust"
+    assert detect_language(Path("Main.java")) == "java"
+    assert detect_language(Path("script.rb")) is None
+
+
+def test_chunk_java_file() -> None:
+    """验证 Java 文件能正常分块。"""
+    java_file = FIXTURES_DIR / "java_pkg" / "Repository.java"
+    chunks = chunk_file(java_file, java_file.parent)
+
+    assert len(chunks) > 0
+    assert any(c.chunk_type == "module" for c in chunks)
+    # load 方法
+    assert any(c.symbol == "load" for c in chunks)
+    # Repository 类
+    assert any(c.symbol == "Repository" and c.chunk_type == "class" for c in chunks)
+    # 所有 chunk language 字段应为 "java"
+    assert all(c.language == "java" for c in chunks)

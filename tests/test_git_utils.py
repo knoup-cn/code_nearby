@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+from brain import git_utils
 from brain.git_utils import parse_repo_identity
 
 
@@ -101,3 +105,72 @@ def test_clone_repo_clones_directly_to_target_path(tmp_path):
         text=True,
         timeout=60,
     )
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+
+@pytest.fixture
+def git_repo(tmp_path: Path) -> Path:
+    """A git repo with one committed file (README.md)."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test User")
+    (repo / "README.md").write_text("# readme\n")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "init")
+    return repo
+
+
+def test_get_changed_files_detects_uncommitted_modification(git_repo: Path) -> None:
+    """Incremental diff must catch edits to tracked files that aren't committed."""
+    src = git_repo / "mod.py"
+    src.write_text("a = 1\n")
+    _git(git_repo, "add", "mod.py")
+    _git(git_repo, "commit", "-m", "add mod")
+    head = git_utils.require_current_commit(git_repo)
+
+    # Modify a tracked file but do NOT commit.
+    src.write_text("a = 2\n")
+
+    changes = git_utils.get_changed_files(git_repo, head)
+    assert src in changes["modified"]
+
+
+def test_get_changed_files_includes_untracked(git_repo: Path) -> None:
+    """Brand-new untracked files count as additions."""
+    head = git_utils.require_current_commit(git_repo)
+    new = git_repo / "new.py"
+    new.write_text("x = 1\n")
+
+    changes = git_utils.get_changed_files(git_repo, head)
+    assert new in changes["added"]
+
+
+def test_get_changed_files_detects_committed_deletion(git_repo: Path) -> None:
+    """A committed deletion since the reference commit is reported."""
+    src = git_repo / "gone.py"
+    src.write_text("y = 1\n")
+    _git(git_repo, "add", "gone.py")
+    _git(git_repo, "commit", "-m", "add gone")
+    head = git_utils.require_current_commit(git_repo)
+
+    _git(git_repo, "rm", "gone.py")
+    _git(git_repo, "commit", "-m", "rm gone")
+
+    changes = git_utils.get_changed_files(git_repo, head)
+    assert src in changes["deleted"]
+
+
+def test_get_untracked_files_excludes_ignored(git_repo: Path) -> None:
+    """get_untracked_files returns new files but honours .gitignore."""
+    (git_repo / ".gitignore").write_text("ignored.py\n")
+    (git_repo / "ignored.py").write_text("x = 1\n")
+    (git_repo / "kept.py").write_text("y = 2\n")
+
+    untracked = git_utils.get_untracked_files(git_repo)
+    assert (git_repo / "kept.py") in untracked
+    assert (git_repo / "ignored.py") not in untracked

@@ -1,4 +1,4 @@
-"""Configuration management."""
+"""配置管理。"""
 from __future__ import annotations
 
 import json
@@ -6,14 +6,14 @@ from pathlib import Path
 
 
 def get_config_path() -> Path:
-    """Get configuration file path."""
+    """获取配置文件路径。"""
     config_dir = Path.home() / ".config" / "brain"
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir / "config.json"
 
 
 def load_config() -> dict:
-    """Load configuration."""
+    """加载配置。"""
     path = get_config_path()
     if not path.exists():
         return {}
@@ -26,7 +26,7 @@ def load_config() -> dict:
 
 
 def save_config(config: dict) -> None:
-    """Save configuration."""
+    """保存配置。"""
     if not validate_config(config):
         raise ValueError(
             "Invalid config: git_repo and local_path must both exist or both be absent"
@@ -35,11 +35,11 @@ def save_config(config: dict) -> None:
 
 
 def validate_config(config: dict) -> bool:
-    """Validate configuration.
+    """验证配置。
 
-    Config must be either empty (uninitialized) or contain both knowledge base
-    fields: git_repo and local_path. Pure local mode (local_path without
-    git_repo) is not supported.
+    配置必须为空（未初始化）或同时包含两个知识库字段：
+    git_repo 和 local_path。不支持纯本地模式（仅有 local_path 而无
+    git_repo）。
     """
     if not config:
         return True
@@ -47,7 +47,7 @@ def validate_config(config: dict) -> bool:
 
 
 def is_initialized() -> bool:
-    """Check if brain is initialized with a valid knowledge base."""
+    """检查 brain 是否已使用有效的知识库完成初始化。"""
     try:
         config = load_config()
         return bool(config.get("git_repo") and config.get("local_path"))

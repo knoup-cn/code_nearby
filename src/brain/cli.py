@@ -6,7 +6,9 @@ from pathlib import Path
 
 import typer
 
-from brain import operations
+from brain.operations.analysis import analyze_project, index_project
+from brain.operations.config import clear_config, get_status, init_config, is_git_repo, needs_overwrite
+from brain.operations.sync import sync_knowledge_base
 
 app = typer.Typer(help="Brain - Knowledge Base Manager")
 
@@ -30,7 +32,7 @@ def callback(ctx: typer.Context) -> None:
 @app.command()
 def init() -> None:
     """Initialize knowledge base."""
-    status = operations.get_status()
+    status = get_status()
     if status:
         typer.secho("Already initialized.", fg=typer.colors.BLUE)
         if not typer.confirm("Reconfigure?"):
@@ -46,13 +48,13 @@ def init() -> None:
         target = Path(kb_local_path).expanduser().resolve()
         overwrite = False
 
-        if operations.needs_overwrite(target):
+        if needs_overwrite(target):
             typer.secho(f"⚠ Directory not empty: {target}", fg=typer.colors.YELLOW)
             if not typer.confirm("Overwrite?", default=False):
                 continue
             overwrite = True
 
-        success, msg = operations.init_config(kb_git_repo, target, overwrite)
+        success, msg = init_config(kb_git_repo, target, overwrite)
 
         if success:
             typer.secho(f"✓ {msg}", fg=typer.colors.GREEN)
@@ -66,7 +68,7 @@ def init() -> None:
 @app.command()
 def status() -> None:
     """Show configuration status."""
-    cfg = operations.get_status()
+    cfg = get_status()
     if not cfg:
         typer.secho("⚠ Not initialized. Run 'brain init'", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
@@ -78,14 +80,14 @@ def status() -> None:
 @app.command()
 def clear() -> None:
     """Clear configuration."""
-    if not operations.get_status():
+    if not get_status():
         typer.secho("Not initialized.", fg=typer.colors.BLUE)
         raise typer.Exit(0)
 
     if not typer.confirm("Clear configuration?", default=False):
         raise typer.Exit(0)
 
-    operations.clear_config()
+    clear_config()
     typer.secho("✓ Cleared", fg=typer.colors.GREEN)
 
 
@@ -107,20 +109,20 @@ def analyze(
     target_path = Path(target).resolve()
 
     # Validate source repository
-    if not operations.is_git_repo(target_path):
+    if not is_git_repo(target_path):
         typer.secho(f"✗ Not a source Git repository: {target_path}", fg=typer.colors.RED)
         typer.echo("Initialize with: git init")
         raise typer.Exit(1)
 
     # Validate knowledge base initialized
-    cfg = operations.get_status()
+    cfg = get_status()
     if not cfg:
         typer.secho("⚠ Run 'brain init' first", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
 
     # Execute analysis
     typer.echo(f"Analyzing {target_path}...")
-    result = operations.analyze_project(target_path, full_rebuild=full, auto_sync=sync)
+    result = analyze_project(target_path, full_rebuild=full, auto_sync=sync)
 
     # Output result
     if result["success"]:
@@ -164,17 +166,17 @@ def index(
     """
     target_path = Path(target).resolve()
 
-    if not operations.is_git_repo(target_path):
+    if not is_git_repo(target_path):
         typer.secho(f"✗ Not a source Git repository: {target_path}", fg=typer.colors.RED)
         typer.echo("Initialize with: git init")
         raise typer.Exit(1)
 
-    if not operations.get_status():
+    if not get_status():
         typer.secho("⚠ Run 'brain init' first", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
 
     typer.echo(f"Indexing {target_path}...")
-    result = operations.index_project(target_path, full_rebuild=full)
+    result = index_project(target_path, full_rebuild=full)
 
     if not result["success"]:
         typer.secho(f"✗ {result['error']}", fg=typer.colors.RED)
@@ -214,7 +216,7 @@ def context(
         brain context "git operations" --content
     """
     # Validate knowledge base initialized
-    cfg = operations.get_status()
+    cfg = get_status()
     if not cfg:
         typer.secho("⚠ Run 'brain init' first", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
@@ -321,11 +323,11 @@ def search(
         brain search "fetch remote url" --json --budget 2000
         brain search load --lang python --path 'src/**/*.py'
     """
-    if not operations.get_status():
+    if not get_status():
         typer.secho("⚠ Run 'brain init' first", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
 
-    cfg = operations.get_status()
+    cfg = get_status()
     kb_path = Path(cfg["local_path"])
     project_path = Path(project).resolve() if project else Path.cwd().resolve()
 
@@ -393,7 +395,7 @@ def sync() -> None:
     want to sync after multiple analyze operations.
     """
     # Validate knowledge base initialized
-    cfg = operations.get_status()
+    cfg = get_status()
     if not cfg:
         typer.secho("⚠ Run 'brain init' first", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
@@ -401,7 +403,7 @@ def sync() -> None:
     kb_path = Path(cfg["local_path"])
 
     # Check if KB is a git repository
-    if not operations.is_git_repo(kb_path):
+    if not is_git_repo(kb_path):
         typer.secho(f"✗ Knowledge base is not a git repository: {kb_path}", fg=typer.colors.RED)
         raise typer.Exit(1)
 
@@ -423,7 +425,7 @@ def sync() -> None:
 
     # Perform sync
     typer.echo("Syncing knowledge base...")
-    result = operations.sync_knowledge_base(
+    result = sync_knowledge_base(
         kb_path, kb_path, changes_summary=f"{total_changes} files"
     )
 

@@ -1,38 +1,66 @@
-"""Core operations (business logic)."""
+"""重构方案 3：拆分 operations.py（614 行 → 4 个文件）
+
+当前 operations.py 混合了 4 类不相关的职责，违反 SRP。
+将其按职责拆分为独立模块。
+"""
+
+# ============================================================
+# 新架构
+# ============================================================
+
+"""
+operations/
+├── __init__.py           # 重导出公共 API（保持向后兼容）
+├── config.py             # 配置管理
+├── analysis.py           # 分析逻辑
+├── sync.py               # Git 同步
+└── indexing.py           # 索引生成
+"""
+
+# ============================================================
+# operations/config.py - 配置管理（约 60 行）
+# ============================================================
+
+CONFIG_MODULE = """
+\"\"\"知识库配置管理。
+
+职责：
+- 初始化知识库（克隆 git 仓库）
+- 加载/保存配置
+- 验证配置有效性
+\"\"\"
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
-from brain import analyzer, config, git_utils, storage
+from brain import config, git_utils
 
 
 def needs_overwrite(path: Path) -> bool:
-    """Return whether initialization would replace an existing directory."""
+    \"\"\"返回初始化是否会替换现有目录。\"\"\"
     return path.exists() and any(path.iterdir())
 
 
 def init_config(
     git_repo: str | None, kb_path: Path, overwrite: bool = False
 ) -> tuple[bool, str]:
-    """Initialize knowledge base configuration.
+    \"\"\"初始化知识库配置。
 
     Args:
-        git_repo: Git repository URL for the knowledge base (read-write)
-        kb_path: Resolved local path for the knowledge base repository
-        overwrite: Whether to overwrite existing non-empty directory
+        git_repo: 知识库的 Git 仓库 URL（读写）
+        kb_path: 知识库仓库的解析后的本地路径
+        overwrite: 是否覆盖已有的非空目录
 
     Returns:
         (success, message)
-    """
+    \"\"\"
     if not git_repo:
         return False, "Git repository is required (knowledge base is stored in git)"
 
     git_repo = git_repo.strip()
     resolved_path = str(kb_path)
 
-    # Knowledge base repository: test connection and clone
+    # 知识库仓库：测试连接并克隆
     success, message = git_utils.test_git_connection(git_repo)
     if not success:
         return False, f"Git connection failed: {message}"
@@ -41,7 +69,7 @@ def init_config(
     if not success:
         return False, f"Clone failed: {message}"
 
-    # Save configuration (both fields required)
+    # 保存配置（两个字段都是必需的）
     cfg = {
         "git_repo": git_repo,
         "local_path": resolved_path,
@@ -51,12 +79,12 @@ def init_config(
 
 
 def get_status() -> dict | None:
-    """Get current configuration."""
+    \"\"\"Get current configuration.\"\"\"
     return config.load_config() if config.is_initialized() else None
 
 
 def clear_config() -> bool:
-    """Clear configuration."""
+    \"\"\"Clear configuration.\"\"\"
     if not config.is_initialized():
         return False
     config.get_config_path().unlink()
@@ -64,14 +92,38 @@ def clear_config() -> bool:
 
 
 def is_git_repo(path: Path) -> bool:
-    """Check if path is a Git repository."""
+    \"\"\"Check if path is a Git repository.\"\"\"
     return git_utils.is_git_repo(path)
+"""
+
+# ============================================================
+# operations/analysis.py - 分析逻辑（约 250 行）
+# ============================================================
+
+ANALYSIS_MODULE = """
+\"\"\"源码分析和索引构建。
+
+职责：
+- 增量/全量分析项目代码
+- 构建 RAG 索引
+- 检测文件变更
+- 调用 analyzer 和 chunker
+\"\"\"
+from __future__ import annotations
+
+import shutil
+from datetime import UTC, datetime
+from pathlib import Path
+
+from brain import analyzer, config, git_utils, storage
+from brain.rag import chunker
+from brain.rag.index import RagIndex
 
 
 def analyze_project(
     project_path: Path, full_rebuild: bool = False, auto_sync: bool = False
 ) -> dict:
-    """Analyze source Git repository incrementally.
+    \"\"\"Analyze source Git repository incrementally.
 
     Args:
         project_path: Path to the source repository (read-only)
@@ -85,12 +137,12 @@ def analyze_project(
             "added": int,
             "modified": int,
             "deleted": int,
-            "kb_path": str | None,  # Project's knowledge base path (org/project)
-            "synced": bool | None,  # Whether changes were committed/pushed (if auto_sync=True)
-            "sync_commit": str | None,  # Commit hash if synced
+            "kb_path": str | None,
+            "synced": bool | None,
+            "sync_commit": str | None,
             "error": str | None
         }
-    """
+    \"\"\"
     # Load knowledge base configuration
     cfg = config.load_config()
     kb_root = cfg.get("local_path")
@@ -115,15 +167,14 @@ def analyze_project(
         return {"success": False, "error": str(e)}
 
     if full_rebuild or not metadata:
-        # Full analysis: all tracked files
         try:
             tracked_files = git_utils.get_tracked_files(project_path)
+            untracked_files = git_utils.get_untracked_files(project_path)
         except git_utils.GitCommandError as e:
             return {"success": False, "error": str(e)}
 
-        changes = {"modified": [], "added": tracked_files, "deleted": []}
+        changes = {"modified": [], "added": tracked_files + untracked_files, "deleted": []}
     else:
-        # Incremental analysis
         try:
             last_commit = metadata.get("last_commit")
             changes = git_utils.get_changed_files(project_path, last_commit)
@@ -150,11 +201,10 @@ def analyze_project(
         },
     )
 
-    # Generate Obsidian index files
-    _generate_project_index(project_kb_path, project_path)
-
-    # Generate dependency graph
-    _generate_project_graph(project_kb_path, project_path)
+    # Generate Obsidian index files (委托给 indexing 模块)
+    from brain.operations.indexing import generate_project_index, generate_project_graph
+    generate_project_index(project_kb_path, project_path)
+    generate_project_graph(project_kb_path, project_path)
 
     total = len(changes["added"]) + len(changes["modified"])
     result = {
@@ -171,6 +221,8 @@ def analyze_project(
 
     # Auto-sync to the knowledge base repository if requested
     if auto_sync and total > 0:
+        from brain.operations.sync import sync_knowledge_base
+
         changes_summary = (
             f"{result['added']} added, "
             f"{result['modified']} modified, "
@@ -190,7 +242,7 @@ def analyze_project(
 
 
 def index_project(project_path: Path, full_rebuild: bool = False) -> dict:
-    """Build/update the Goal-2 lexical+structural RAG index for a project.
+    \"\"\"Build/update the Goal-2 lexical+structural RAG index for a project.
 
     Mirrors :func:`analyze_project` but writes a per-project SQLite FTS5 index
     under ``{kb}/{org}/{project}/.rag/`` instead of Markdown. Incremental at the
@@ -207,12 +259,7 @@ def index_project(project_path: Path, full_rebuild: bool = False) -> dict:
             "kb_path": str | None,
             "error": str | None,
         }
-    """
-    import shutil
-
-    from brain.rag import chunker
-    from brain.rag.index import RagIndex
-
+    \"\"\"
     cfg = config.load_config()
     kb_root = cfg.get("local_path")
     if not kb_root:
@@ -238,9 +285,10 @@ def index_project(project_path: Path, full_rebuild: bool = False) -> dict:
     if full_rebuild or not last_indexed:
         try:
             tracked = git_utils.get_tracked_files(project_path)
+            untracked = git_utils.get_untracked_files(project_path)
         except git_utils.GitCommandError as e:
             return {"success": False, "error": str(e)}
-        changes = {"added": tracked, "modified": [], "deleted": []}
+        changes = {"added": tracked + untracked, "modified": [], "deleted": []}
         if full_rebuild:
             shutil.rmtree(rag_dir, ignore_errors=True)
     else:
@@ -306,20 +354,39 @@ def index_project(project_path: Path, full_rebuild: bool = False) -> dict:
 
 
 def _ensure_rag_gitignore(kb_path: Path) -> None:
-    """Keep the derived, binary ``.rag/`` index out of the knowledge-base repo."""
+    \"\"\"Keep the derived, binary ``.rag/`` index out of the knowledge-base repo.\"\"\"
     gitignore = kb_path / ".gitignore"
     rule = "**/.rag/"
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
     if rule in existing.split():
         return
-    prefix = "" if existing.endswith("\n") or not existing else "\n"
-    gitignore.write_text(f"{existing}{prefix}{rule}\n", encoding="utf-8")
+    prefix = "" if existing.endswith("\\n") or not existing else "\\n"
+    gitignore.write_text(f"{existing}{prefix}{rule}\\n", encoding="utf-8")
+"""
+
+# ============================================================
+# operations/sync.py - Git 同步（约 100 行）
+# ============================================================
+
+SYNC_MODULE = """
+\"\"\"知识库 Git 同步。
+
+职责：
+- 提交知识库变更
+- 推送到远程仓库
+- 生成提交消息
+\"\"\"
+from __future__ import annotations
+
+from pathlib import Path
+
+from brain import git_utils
 
 
 def sync_knowledge_base(
     kb_path: Path, project_path: Path, changes_summary: str
 ) -> dict:
-    """Commit and push knowledge base changes.
+    \"\"\"Commit and push knowledge base changes.
 
     Args:
         kb_path: Knowledge base root path
@@ -333,7 +400,7 @@ def sync_knowledge_base(
             "pushed": bool,  # Whether push succeeded
             "error": str | None
         }
-    """
+    \"\"\"
     # Check if KB is a git repository
     if not git_utils.is_git_repo(kb_path):
         return {
@@ -391,15 +458,37 @@ def sync_knowledge_base(
             "pushed": False,
             "error": str(e),
         }
+"""
+
+# ============================================================
+# operations/indexing.py - 索引生成（约 200 行）
+# ============================================================
+
+INDEXING_MODULE = """
+\"\"\"Obsidian 索引文件生成。
+
+职责：
+- 生成 _PROJECT.md（项目总览）
+- 生成 _MODULES.md（模块分类）
+- 生成 _GRAPH.json（依赖图）
+- 解析 YAML frontmatter
+\"\"\"
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from brain import git_utils, graph
 
 
-def _generate_project_index(kb_path: Path, project_path: Path) -> None:
-    """Generate Obsidian index files (_PROJECT.md and _MODULES.md).
+def generate_project_index(kb_path: Path, project_path: Path) -> None:
+    \"\"\"Generate Obsidian index files (_PROJECT.md and _MODULES.md).
 
     Args:
         kb_path: Project's knowledge base path (org/project/)
         project_path: Source project path
-    """
+    \"\"\"
     project_name = project_path.name
 
     # Get org/project from git remote
@@ -422,7 +511,7 @@ def _generate_project_index(kb_path: Path, project_path: Path) -> None:
             yaml_end = content.find("---", 3)
             if yaml_end != -1:
                 frontmatter_text = content[3:yaml_end].strip()
-                metadata = _parse_simple_yaml(frontmatter_text)
+                metadata = parse_yaml_frontmatter(frontmatter_text)
 
                 relative = md_file.relative_to(kb_path).with_suffix("")
                 modules.append(
@@ -436,6 +525,16 @@ def _generate_project_index(kb_path: Path, project_path: Path) -> None:
                 )
 
     # Generate _PROJECT.md
+    _write_project_index(kb_path, project_name, org_name, modules)
+
+    # Generate _MODULES.md
+    _write_modules_index(kb_path, project_name, modules)
+
+
+def _write_project_index(
+    kb_path: Path, project_name: str, org_name: str, modules: list[dict]
+) -> None:
+    \"\"\"Write _PROJECT.md file.\"\"\"
     project_lines = [
         "---",
         "type: project-index",
@@ -480,7 +579,7 @@ def _generate_project_index(kb_path: Path, project_path: Path) -> None:
             "### By Lines of Code",
             "",
             "```dataview",
-            "TABLE type, lines_of_code, length(exports) AS \"Exports\"",
+            "TABLE type, lines_of_code, length(exports) AS \\"Exports\\"",
             "FROM #python",
             "SORT lines_of_code DESC",
             "```",
@@ -495,9 +594,13 @@ def _generate_project_index(kb_path: Path, project_path: Path) -> None:
         ]
     )
 
-    (kb_path / "_PROJECT.md").write_text("\n".join(project_lines), encoding="utf-8")
+    (kb_path / "_PROJECT.md").write_text("\\n".join(project_lines), encoding="utf-8")
 
-    # Generate _MODULES.md (categorized view)
+
+def _write_modules_index(
+    kb_path: Path, project_name: str, modules: list[dict]
+) -> None:
+    \"\"\"Write _MODULES.md file (categorized view).\"\"\"
     modules_lines = [
         "---",
         "type: module-index",
@@ -536,45 +639,40 @@ def _generate_project_index(kb_path: Path, project_path: Path) -> None:
         ]
     )
 
-    (kb_path / "_MODULES.md").write_text("\n".join(modules_lines), encoding="utf-8")
+    (kb_path / "_MODULES.md").write_text("\\n".join(modules_lines), encoding="utf-8")
 
 
-def _generate_project_graph(kb_path: Path, project_path: Path) -> None:
-    """Generate dependency graph (_GRAPH.json).
+def generate_project_graph(kb_path: Path, project_path: Path) -> None:
+    \"\"\"Generate dependency graph (_GRAPH.json).
 
     Args:
         kb_path: Project's knowledge base path (org/project/)
         project_path: Source project path
-    """
-    from brain import graph
-
+    \"\"\"
     project_name = project_path.resolve().name
 
     try:
-        # Generate graph
         g = graph.generate_graph(kb_path, project_name)
-        # Save to _GRAPH.json
         graph.save_graph(g, kb_path)
     except Exception as e:
-        # Don't fail the entire analyze operation if graph generation fails
         import sys
         print(f"Warning: Failed to generate graph: {e}", file=sys.stderr)
 
 
-def _parse_simple_yaml(yaml_text: str) -> dict[str, Any]:
-    """Parse simple YAML frontmatter (no external dependencies).
+def parse_yaml_frontmatter(yaml_text: str) -> dict[str, Any]:
+    \"\"\"Parse simple YAML frontmatter (no external dependencies).
 
     Args:
         yaml_text: YAML text without --- markers
 
     Returns:
         Parsed dictionary
-    """
+    \"\"\"
     result: dict[str, Any] = {}
     current_key = None
     current_list: list[str] = []
 
-    for line in yaml_text.split("\n"):
+    for line in yaml_text.split("\\n"):
         line = line.rstrip()
         if not line:
             continue
@@ -594,13 +692,11 @@ def _parse_simple_yaml(yaml_text: str) -> dict[str, Any]:
             value = value.strip().strip('"')
 
             if value:
-                # Try to convert to int
                 try:
                     result[current_key] = int(value)
                 except ValueError:
                     result[current_key] = value
             else:
-                # Next lines might be a list
                 pass
 
     # Flush last list
@@ -608,3 +704,129 @@ def _parse_simple_yaml(yaml_text: str) -> dict[str, Any]:
         result[current_key] = current_list
 
     return result
+"""
+
+# ============================================================
+# operations/__init__.py - 向后兼容层
+# ============================================================
+
+INIT_MODULE = """
+\"\"\"Operations 模块入口。
+
+重导出所有公共 API，保持向后兼容。
+\"\"\"
+
+# 配置管理
+from brain.operations.config import (
+    clear_config,
+    get_status,
+    init_config,
+    is_git_repo,
+    needs_overwrite,
+)
+
+# 分析逻辑
+from brain.operations.analysis import analyze_project, index_project
+
+# Git 同步
+from brain.operations.sync import sync_knowledge_base
+
+# 索引生成（内部函数，不导出）
+# from brain.operations.indexing import generate_project_index, generate_project_graph
+
+__all__ = [
+    # Config
+    "needs_overwrite",
+    "init_config",
+    "get_status",
+    "clear_config",
+    "is_git_repo",
+    # Analysis
+    "analyze_project",
+    "index_project",
+    # Sync
+    "sync_knowledge_base",
+]
+"""
+
+# ============================================================
+# 迁移步骤
+# ============================================================
+
+MIGRATION_PLAN = """
+# 迁移步骤（零停机）
+
+## 阶段 1：创建新模块（不破坏现有代码）
+
+```bash
+mkdir -p src/brain/operations
+touch src/brain/operations/__init__.py
+touch src/brain/operations/config.py
+touch src/brain/operations/analysis.py
+touch src/brain/operations/sync.py
+touch src/brain/operations/indexing.py
+```
+
+复制对应函数到新文件（保持 operations.py 不变）。
+
+## 阶段 2：更新导入（渐进式）
+
+在 `operations/__init__.py` 中重导出所有 API：
+```python
+from brain.operations.config import init_config, get_status, ...
+from brain.operations.analysis import analyze_project, index_project
+# ...
+```
+
+此时外部代码仍可使用：
+```python
+from brain.operations import analyze_project  # 仍然有效
+```
+
+## 阶段 3：更新内部调用
+
+逐步将内部模块的导入从：
+```python
+from brain import operations
+result = operations.analyze_project(...)
+```
+
+改为：
+```python
+from brain.operations import analyze_project
+result = analyze_project(...)
+```
+
+## 阶段 4：删除旧文件
+
+确认所有测试通过后，删除 `src/brain/operations.py`。
+
+## 验证清单
+
+- [ ] `pytest tests/` 全部通过
+- [ ] `from brain.operations import X` 所有导入正常
+- [ ] CLI 命令正常工作
+- [ ] TUI 界面正常工作
+- [ ] 无循环导入警告
+"""
+
+# ============================================================
+# 写入文件内容
+# ============================================================
+
+if __name__ == "__main__":
+    print("Operations 拆分方案生成完毕")
+    print("\n新架构预览:")
+    print("""
+operations/
+├── __init__.py      # 重导出 API（向后兼容）
+├── config.py        # 配置管理（60 行）
+├── analysis.py      # 分析逻辑（250 行）
+├── sync.py          # Git 同步（100 行）
+└── indexing.py      # 索引生成（200 行）
+    """)
+    print("\n收益:")
+    print("- 614 行 → 4 个 < 250 行的文件")
+    print("- 清晰的职责边界")
+    print("- 更容易单元测试")
+    print("- 降低认知负担")

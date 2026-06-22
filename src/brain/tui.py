@@ -9,7 +9,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 
-from brain import operations
+from brain.operations.config import clear_config, get_status, init_config, needs_overwrite
 
 
 class ConfirmDialog(ModalScreen):
@@ -133,7 +133,7 @@ class BrainApp(App):
 
     def _refresh(self) -> None:
         """Refresh UI based on configuration state."""
-        cfg = operations.get_status()
+        cfg = get_status()
         container = self.query_one("#main", ScrollableContainer)
         # Remove dynamic content only (keep title and status)
         for widget in list(container.children)[2:]:
@@ -175,7 +175,7 @@ class BrainApp(App):
 
     def _update_status(self) -> None:
         """Update status bar."""
-        cfg = operations.get_status()
+        cfg = get_status()
         if not cfg:
             self.status = "Not initialized"
         else:
@@ -197,7 +197,7 @@ class BrainApp(App):
         if btn_id == "init":
             self._handle_init()
         elif btn_id == "reconfig":
-            operations.clear_config()
+            clear_config()
             self._refresh()
             self._set_status("Ready to reconfigure")
         elif btn_id == "clear":
@@ -217,7 +217,7 @@ class BrainApp(App):
 
         kb_path = Path(local_path).expanduser().resolve()
 
-        if operations.needs_overwrite(kb_path):
+        if needs_overwrite(kb_path):
             self.push_screen(
                 ConfirmDialog("⚠️ Directory not empty. Overwrite?"),
                 lambda confirmed: self._complete_init(kb_git_repo, kb_path, confirmed),
@@ -227,11 +227,11 @@ class BrainApp(App):
 
     def _complete_init(self, git_repo: str | None, kb_path: Path, overwrite: bool) -> None:
         """Complete initialization after confirmation."""
-        if operations.needs_overwrite(kb_path) and not overwrite:
+        if needs_overwrite(kb_path) and not overwrite:
             self._set_status("Initialization cancelled")
             return
 
-        success, msg = operations.init_config(git_repo, kb_path, overwrite)
+        success, msg = init_config(git_repo, kb_path, overwrite)
 
         if success:
             self._refresh()
@@ -241,7 +241,7 @@ class BrainApp(App):
     def _handle_clear(self, confirmed: bool) -> None:
         """Handle clear configuration."""
         if confirmed:
-            operations.clear_config()
+            clear_config()
             self._refresh()
             self._set_status("✓ Cleared")
 

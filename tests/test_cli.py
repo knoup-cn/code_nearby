@@ -7,9 +7,9 @@ from unittest.mock import patch
 import pytest
 from typer.testing import CliRunner
 
-from brain import operations
 from brain.cli import app
 from brain.config import load_config, save_config, validate_config
+from brain.operations.config import needs_overwrite
 
 runner = CliRunner()
 
@@ -118,10 +118,10 @@ def test_clear_config(tmp_path, monkeypatch):
 def test_needs_overwrite(tmp_path):
     """Test overwrite detection for init."""
     target = tmp_path / "vault"
-    assert not operations.needs_overwrite(target)
+    assert not needs_overwrite(target)
 
     target.mkdir()
-    assert not operations.needs_overwrite(target)
+    assert not needs_overwrite(target)
 
     (target / "file.md").write_text("x")
-    assert operations.needs_overwrite(target)
+    assert needs_overwrite(target)

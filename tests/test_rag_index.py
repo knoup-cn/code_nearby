@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from brain import operations
+from brain import config
+from brain.operations.analysis import index_project
 from brain.rag.chunker import chunk_file
 from brain.rag.index import RagIndex
 
@@ -83,7 +84,7 @@ def test_file_manifest_round_trip(index: RagIndex) -> None:
     assert manifest[chunks[0].chunk_id] == chunks[0].content_hash
 
 
-# --- incremental orchestration (operations.index_project) ------------------
+# --- incremental orchestration (index_project) ------------------
 
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
@@ -112,7 +113,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     kb = tmp_path / "kb"
     kb.mkdir()
     monkeypatch.setattr(
-        operations.config,
+        config,
         "load_config",
         lambda: {"local_path": str(kb), "git_repo": "x"},
     )
@@ -121,7 +122,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def test_index_project_full_then_incremental(project: Path) -> None:
     # full build
-    result = operations.index_project(project, full_rebuild=True)
+    result = index_project(project, full_rebuild=True)
     assert result["success"]
     total = result["chunks_total"]
     assert total > 0
@@ -133,7 +134,7 @@ def test_index_project_full_then_incremental(project: Path) -> None:
         '"""f1."""\n\n\ndef alpha():\n    return 99\n\n\ndef beta():\n    return 2\n'
     )
     _git(project, "commit", "-aqm", "edit alpha")
-    inc = operations.index_project(project)
+    inc = index_project(project)
     assert inc["chunks_updated"] == 1
     assert inc["chunks_added"] == 0
     assert inc["chunks_deleted"] == 0
@@ -145,24 +146,24 @@ def test_index_project_full_then_incremental(project: Path) -> None:
         "\n\ndef delta():\n    return 4\n"
     )
     _git(project, "commit", "-aqm", "add delta")
-    inc2 = operations.index_project(project)
+    inc2 = index_project(project)
     assert inc2["chunks_added"] == 1
     assert inc2["chunks_updated"] == 0
     assert inc2["chunks_total"] == total + 1
 
 
 def test_index_project_handles_deletion(project: Path) -> None:
-    operations.index_project(project, full_rebuild=True)
+    index_project(project, full_rebuild=True)
     f2_chunks = len(chunk_file(project / "f2.py", project))
     assert f2_chunks > 0
 
     (project / "f2.py").unlink()
     _git(project, "commit", "-aqm", "remove f2")
-    inc = operations.index_project(project)
+    inc = index_project(project)
     assert inc["chunks_deleted"] == f2_chunks
 
 
 def test_full_rebuild_writes_gitignore(project: Path) -> None:
-    operations.index_project(project, full_rebuild=True)
-    gitignore = Path(operations.config.load_config()["local_path"]) / ".gitignore"
+    index_project(project, full_rebuild=True)
+    gitignore = Path(config.load_config()["local_path"]) / ".gitignore"
     assert "**/.rag/" in gitignore.read_text().split()

@@ -16,19 +16,22 @@ A dual-mode knowledge management tool with both TUI and CLI interfaces. Automati
 ## 🚀 Quick Start
 
 ```bash
-# Install
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e .
+# Install uv if needed: https://docs.astral.sh/uv/getting-started/installation/
+# Create the virtual environment and install dependencies from uv.lock
+uv sync
 
 # Initialize knowledge base
-brain init
+uv run brain init
 
 # Analyze a source Git repository
-brain analyze .
+uv run brain analyze .
 # or simply
-brain .
+uv run brain .
 ```
+
+> 💡 Prefix commands with `uv run` (e.g. `uv run brain analyze .`), or activate the
+> environment once with `source .venv/bin/activate` and then call `brain` directly
+> (as shown in the Usage section below).
 
 See [Quick Start Guide](./docs/QUICKSTART.md) for detailed instructions.
 
@@ -172,9 +175,9 @@ See [Obsidian Integration Guide](./docs/OBSIDIAN_INTEGRATION.md) for more exampl
 ## 🧪 Development
 
 ```bash
-pip install -e ".[dev]"
-pytest                # Run tests (46 tests pass)
-ruff check .          # Lint code
+uv sync --extra dev   # Install dev dependencies (pytest, ruff)
+uv run pytest         # Run tests
+uv run ruff check .   # Lint code
 ```
 
 ## 🏗️ Architecture

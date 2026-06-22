@@ -1,174 +1,220 @@
-"""Code analysis operations."""
+"""代码分析操作——将源文件解析为 Obsidian 知识库文档。
+
+使用 tree-sitter 做 CST 解析，支持 Python/JavaScript/TypeScript/Go/Rust。
+输出 Obsidian 兼容的 Markdown（YAML frontmatter + wikilinks）。
+"""
 
 from __future__ import annotations
 
-import ast
 import hashlib
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tree_sitter import Node
+
+from brain.lang_config import LanguageConfig, detect_language, get_config
+from brain.tree_sitter_utils import (
+    extract_base_classes,
+    extract_parameters,
+    extract_return_type,
+    get_docstring,
+    get_module_docstring,
+    get_parser,
+    is_async_def,
+    node_name,
+    node_text,
+    unwrap_decorated,
+)
+
 
 def analyze_file(file_path: Path, kb_path: Path, project_root: Path) -> None:
-    """Analyze a single file and write to knowledge base.
+    """分析单个文件并写入知识库。
 
     Args:
-        file_path: File to analyze
-        kb_path: Knowledge base root path
-        project_root: Project root for relative path calculation
+        file_path: 待分析文件
+        kb_path: 知识库根路径
+        project_root: 项目根目录（用于计算相对路径）
     """
-    # Only Python files for now
-    if file_path.suffix != ".py":
+    language = detect_language(file_path)
+    if language is None:
         return
 
     try:
         source = file_path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
-    except (SyntaxError, UnicodeDecodeError):
-        # Skip unparseable files
+    except UnicodeDecodeError:
         return
 
-    # Extract structure
-    relative_path = file_path.relative_to(project_root)
-    project_name = project_root.resolve().name  # Use absolute path to get actual name
-    metadata = _extract_metadata(file_path, relative_path, tree, source)
-    symbols = _extract_symbols(tree, source)
-    dependencies = _extract_dependencies(tree, project_name)
+    cfg = get_config(language)
+    src = source.encode("utf-8")
+    root = get_parser(language).parse(src).root_node
 
-    # Generate Obsidian-friendly markdown
+    # 提取结构信息
+    relative = file_path.relative_to(project_root)
+    project_name = project_root.resolve().name
+    metadata = _extract_metadata(file_path, relative, root, src, source, cfg)
+    symbols = _extract_symbols(root, src, source, cfg)
+    dependencies = _extract_dependencies(root, src, project_name)
+
+    # 生成 Obsidian 兼容 Markdown
     content = _generate_obsidian_md(
         file_path=file_path,
-        relative_path=relative_path,
+        relative_path=relative,
         metadata=metadata,
         symbols=symbols,
         dependencies=dependencies,
         project_name=project_name,
     )
 
-    # Write to knowledge base
-    kb_file = kb_path / relative_path.with_suffix(".md")
+    # 写入知识库。内容与磁盘相同时跳过写入，避免无意义的 git churn
+    kb_file = kb_path / relative.with_suffix(".md")
+    if kb_file.exists() and kb_file.read_text(encoding="utf-8") == content:
+        return
     kb_file.parent.mkdir(parents=True, exist_ok=True)
     kb_file.write_text(content, encoding="utf-8")
 
 
 def _extract_metadata(
-    file_path: Path, relative_path: Path, tree: ast.AST, source: str
+    file_path: Path,
+    relative_path: Path,
+    root: Node,
+    src: bytes,
+    source: str,
+    cfg: LanguageConfig,
 ) -> dict[str, Any]:
-    """Extract file-level metadata."""
-    module_docstring = ast.get_docstring(tree)
+    """提取文件级元数据。"""
+    module_docstring = get_module_docstring(src, root)
 
-    # Count lines (excluding blank lines and comments)
+    # 统计代码行（排除空行和注释行）
     lines = source.split("\n")
+    comment_prefix = cfg.comment_prefix
     code_lines = [
-        line for line in lines if line.strip() and not line.strip().startswith("#")
+        line
+        for line in lines
+        if line.strip() and not line.strip().startswith(comment_prefix)
     ]
 
     return {
-        "type": "python-module",
+        "type": cfg.module_type_label,
         "path": str(relative_path),
         "module_docstring": module_docstring,
         "lines_of_code": len(code_lines),
-        "last_analyzed": datetime.now(UTC).isoformat(),
     }
 
 
-def _extract_symbols(tree: ast.AST, source: str) -> dict[str, list[dict[str, Any]]]:
-    """Extract functions and classes from top-level only.
+def _extract_symbols(
+    root: Node,
+    src: bytes,
+    source: str,
+    cfg: LanguageConfig,
+) -> dict[str, list[dict[str, Any]]]:
+    """从顶层提取函数和类。
 
     Args:
-        tree: AST tree
-        source: Source code (for extracting signature lines)
+        root: CST 根节点
+        src: 源文件字节
+        source: 源文件字符串（用于提取签名行）
+        cfg: 语言配置
 
     Returns:
-        Dictionary with 'functions' and 'classes' lists
+        包含 'functions' 和 'classes' 列表的字典
     """
     symbols: dict[str, list[dict[str, Any]]] = {"functions": [], "classes": []}
     lines = source.split("\n")
 
-    for node in ast.iter_child_nodes(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            # Extract arguments with type hints
-            args = []
-            for arg in node.args.args:
-                arg_str = arg.arg
-                if arg.annotation:
-                    arg_str += f": {ast.unparse(arg.annotation)}"
-                args.append(arg_str)
+    # 方法节点类型集合（None 表示与 func_type 相同）
+    method_func_types = cfg.method_func_types or (cfg.func_type,)
 
-            # Extract return type
-            return_type = None
-            if node.returns:
-                return_type = ast.unparse(node.returns)
+    for node in root.named_children:
+        span_node, inner = unwrap_decorated(node, cfg)
 
-            # Extract signature from source
-            signature = _extract_signature(lines, node.lineno, node.end_lineno)
+        # ---- 函数检测 ----
+        if inner.type == cfg.func_type or (
+            cfg.method_func_types and inner.type in cfg.method_func_types
+        ):
+            # 只有顶层函数才加入 functions 列表（方法在类内部处理）
+            name = node_name(inner, src)
+            is_async = is_async_def(inner) if cfg.has_async_keyword else False
+
+            # 提取参数
+            args = extract_parameters(inner, src)
+
+            # 提取返回类型
+            return_type = extract_return_type(inner, src)
+
+            # 从源码提取签名
+            start_line = span_node.start_point[0] + 1
+            end_line = span_node.end_point[0] + 1
+            signature = _extract_signature(lines, start_line, end_line)
             signature_hash = _compute_signature_hash(signature)
 
             symbols["functions"].append(
                 {
-                    "name": node.name,
-                    "lineno": node.lineno,
-                    "end_lineno": node.end_lineno,
-                    "docstring": ast.get_docstring(node),
+                    "name": name,
+                    "lineno": start_line,
+                    "end_lineno": end_line,
+                    "docstring": get_docstring(src, inner),
                     "args": args,
                     "return_type": return_type,
-                    "is_private": node.name.startswith("_"),
-                    "is_async": isinstance(node, ast.AsyncFunctionDef),
+                    "is_private": cfg.is_private_symbol(name),
+                    "is_async": is_async,
                     "signature": signature,
                     "signature_hash": signature_hash,
                 }
             )
-        elif isinstance(node, ast.ClassDef):
-            # Extract methods with full details
+
+        # ---- 类检测 ----
+        elif inner.type in cfg.class_types:
+            name = node_name(inner, src)
+            bases = extract_base_classes(inner, src)
+
+            # 提取类体内的方法
             methods = []
-            for n in ast.iter_child_nodes(node):
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    # Extract arguments with type hints
-                    args = []
-                    for arg in n.args.args:
-                        arg_str = arg.arg
-                        if arg.annotation:
-                            arg_str += f": {ast.unparse(arg.annotation)}"
-                        args.append(arg_str)
+            body = inner.child_by_field_name("body")
+            if body is not None:
+                for child in body.named_children:
+                    m_span, m_inner = unwrap_decorated(child, cfg)
+                    if m_inner.type not in method_func_types:
+                        continue
+                    m_name = node_name(m_inner, src)
+                    if not m_name:
+                        continue
+                    m_is_async = is_async_def(m_inner) if cfg.has_async_keyword else False
+                    m_args = extract_parameters(m_inner, src)
+                    m_return_type = extract_return_type(m_inner, src)
+                    m_start = m_span.start_point[0] + 1
+                    m_end = m_span.end_point[0] + 1
+                    m_sig = _extract_signature(lines, m_start, m_end)
+                    m_sig_hash = _compute_signature_hash(m_sig)
 
-                    # Extract return type
-                    return_type = None
-                    if n.returns:
-                        return_type = ast.unparse(n.returns)
+                    methods.append(
+                        {
+                            "name": m_name,
+                            "lineno": m_start,
+                            "end_lineno": m_end,
+                            "docstring": get_docstring(src, m_inner),
+                            "args": m_args,
+                            "return_type": m_return_type,
+                            "is_private": cfg.is_private_symbol(m_name),
+                            "is_async": m_is_async,
+                            "signature": m_sig,
+                            "signature_hash": m_sig_hash,
+                        }
+                    )
 
-                    # Extract method signature from source
-                    method_signature = _extract_signature(lines, n.lineno, n.end_lineno)
-                    method_signature_hash = _compute_signature_hash(method_signature)
-
-                    methods.append({
-                        "name": n.name,
-                        "lineno": n.lineno,
-                        "end_lineno": n.end_lineno,
-                        "docstring": ast.get_docstring(n),
-                        "args": args,
-                        "return_type": return_type,
-                        "is_private": n.name.startswith("_"),
-                        "is_async": isinstance(n, ast.AsyncFunctionDef),
-                        "signature": method_signature,
-                        "signature_hash": method_signature_hash,
-                    })
-
-            # Extract base classes
-            bases = [ast.unparse(base) for base in node.bases]
-
-            # Extract signature from source
-            signature = _extract_signature(lines, node.lineno, node.end_lineno)
+            start_line = span_node.start_point[0] + 1
+            end_line = span_node.end_point[0] + 1
+            signature = _extract_signature(lines, start_line, end_line)
             signature_hash = _compute_signature_hash(signature)
 
             symbols["classes"].append(
                 {
-                    "name": node.name,
-                    "lineno": node.lineno,
-                    "end_lineno": node.end_lineno,
-                    "docstring": ast.get_docstring(node),
+                    "name": name,
+                    "lineno": start_line,
+                    "end_lineno": end_line,
+                    "docstring": get_docstring(src, inner),
                     "methods": methods,
                     "bases": bases,
-                    "is_private": node.name.startswith("_"),
+                    "is_private": cfg.is_private_symbol(name),
                     "signature": signature,
                     "signature_hash": signature_hash,
                 }
@@ -178,22 +224,22 @@ def _extract_symbols(tree: ast.AST, source: str) -> dict[str, list[dict[str, Any
 
 
 def _extract_signature(lines: list[str], start_line: int, end_line: int) -> str:
-    """Extract function/class signature from source.
+    """从源码提取函数/类签名。
 
     Args:
-        lines: Source code lines
-        start_line: Starting line number (1-indexed)
-        end_line: Ending line number (1-indexed)
+        lines: 源码行列表
+        start_line: 起始行号（1-indexed）
+        end_line: 结束行号（1-indexed）
 
     Returns:
-        Signature string (e.g., "def analyze_file(...):")
+        签名文本（如 "def analyze_file(...):"）
     """
-    # Extract the def/class line (may span multiple lines)
+    # 提取 def/class 行（可能跨多行）
     signature_lines = []
     for i in range(start_line - 1, min(end_line, len(lines))):
         line = lines[i].strip()
         signature_lines.append(line)
-        # Stop at the first line ending with ":"
+        # 遇到第一个以 ":" 结尾的行即停止
         if line.endswith(":"):
             break
 
@@ -201,50 +247,67 @@ def _extract_signature(lines: list[str], start_line: int, end_line: int) -> str:
 
 
 def _compute_signature_hash(signature: str) -> str:
-    """Compute SHA256 hash of signature (first 8 chars).
+    """计算签名的 SHA256 哈希（前 8 个十六进制字符）。
 
     Args:
-        signature: Function/class signature
+        signature: 函数/类签名
 
     Returns:
-        8-character hex hash
+        8 字符的十六进制哈希
     """
     normalized = signature.strip()
     return hashlib.sha256(normalized.encode()).hexdigest()[:8]
 
 
-def _extract_dependencies(tree: ast.AST, project_name: str) -> dict[str, list[str]]:
-    """Extract imports and dependencies.
+def _extract_dependencies(
+    root: Node,
+    src: bytes,
+    project_name: str,
+) -> dict[str, list[str]]:
+    """提取 import 和依赖。
 
     Args:
-        tree: AST tree of the module
-        project_name: Name of the project (for detecting internal imports)
+        root: CST 根节点
+        src: 源文件字节
+        project_name: 项目名称（用于检测内部 import）
 
     Returns:
-        Dictionary with 'imports' and 'internal_imports' lists
+        包含 'imports' 和 'internal_imports' 列表的字典
     """
     imports: list[str] = []
     internal_imports: list[str] = []
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                imports.append(alias.name)
-                # Check if import starts with project name (e.g., "brain.*", "myproject.*")
-                if alias.name.startswith(f"{project_name}."):
-                    internal_imports.append(alias.name)
-        elif isinstance(node, ast.ImportFrom):
-            if node.module:
-                module_name = node.module
-                imports.append(module_name)
-                # Track internal imports (project.* or from project import ...)
-                if module_name.startswith(f"{project_name}.") or module_name == project_name:
-                    # For "from project import x, y", expand to project.x, project.y
-                    if module_name == project_name:
-                        for alias in node.names:
-                            internal_imports.append(f"{project_name}.{alias.name}")
+    for child in root.named_children:
+        if child.type == "import_statement":
+            for n in child.named_children:
+                dotted = _dotted_name(src, n)
+                if dotted:
+                    imports.append(dotted)
+                    # 检测内部 import（以项目名为前缀）
+                    if dotted.startswith(f"{project_name}."):
+                        internal_imports.append(dotted)
+
+        elif child.type == "import_from_statement":
+            module = child.child_by_field_name("module_name")
+            if module is not None:
+                mod_name = node_text(src, module)
+                imports.append(mod_name)
+                # 判断是否为内部 import
+                if mod_name.startswith(f"{project_name}.") or mod_name == project_name:
+                    if mod_name == project_name:
+                        # from project import x, y → 展开为 project.x, project.y
+                        # 跳过第一个 named_child（与 module_name 相同的 dotted_name）
+                        inner_names = [
+                            n
+                            for n in child.named_children
+                            if n.type in ("dotted_name", "aliased_import")
+                        ]
+                        for n in inner_names[1:]:  # 跳过第一个（module_name 自身）
+                            name = _dotted_name(src, n)
+                            if name:
+                                internal_imports.append(f"{project_name}.{name}")
                     else:
-                        internal_imports.append(module_name)
+                        internal_imports.append(mod_name)
 
     return {
         "imports": sorted(set(imports)),
@@ -252,11 +315,26 @@ def _extract_dependencies(tree: ast.AST, project_name: str) -> dict[str, list[st
     }
 
 
-def _infer_tags(relative_path: Path, symbols: dict[str, list[dict[str, Any]]]) -> list[str]:
-    """Automatically infer tags from file content."""
-    tags = ["python"]
+def _dotted_name(src: bytes, node: Node) -> str:
+    """从 import 节点提取点分名称。"""
+    if node.type == "dotted_name":
+        return node_text(src, node)
+    if node.type == "aliased_import":
+        target = node.child_by_field_name("name")
+        return node_text(src, target) if target is not None else ""
+    return ""
 
-    # Based on path
+
+def _infer_tags(
+    relative_path: Path,
+    symbols: dict[str, list[dict[str, Any]]],
+    language: str,
+) -> list[str]:
+    """根据文件内容和路径自动推断标签。"""
+    cfg = get_config(language)
+    tags = [cfg.tag_name]
+
+    # 基于路径
     parts = relative_path.parts
     if "tests" in parts or "test" in parts:
         tags.append("test")
@@ -267,7 +345,7 @@ def _infer_tags(relative_path: Path, symbols: dict[str, list[dict[str, Any]]]) -
     if "tui" in relative_path.stem:
         tags.append("tui")
 
-    # Based on content
+    # 基于内容
     if any(f["is_async"] for f in symbols["functions"]):
         tags.append("async")
     if any("test_" in f["name"] for f in symbols["functions"]):
@@ -284,21 +362,21 @@ def _generate_obsidian_md(
     dependencies: dict[str, list[str]],
     project_name: str,
 ) -> str:
-    """Generate Obsidian-friendly Markdown with frontmatter and wikilinks.
+    """生成 Obsidian 兼容的 Markdown（含 frontmatter 和 wikilinks）。
 
     Args:
-        file_path: Absolute path to the source file
-        relative_path: Path relative to project root
-        metadata: File metadata
-        symbols: Extracted symbols (functions, classes)
-        dependencies: Import dependencies
-        project_name: Name of the project (for filtering internal imports)
+        file_path: 源文件绝对路径
+        relative_path: 相对于项目根目录的路径
+        metadata: 文件元数据
+        symbols: 提取的符号（函数、类）
+        dependencies: import 依赖
+        project_name: 项目名称（用于过滤内部 import）
     """
     module_name = relative_path.stem
 
-    # Build full module name (e.g., "brain.analyzer")
+    # 构建完整模块名（如 "brain.analyzer"）
     module_parts = []
-    for part in relative_path.parts[:-1]:  # Exclude filename
+    for part in relative_path.parts[:-1]:  # 排除文件名
         if part == "src":
             continue
         module_parts.append(part)
@@ -307,14 +385,14 @@ def _generate_obsidian_md(
 
     lines: list[str] = []
 
-    # === Frontmatter (YAML) ===
+    # === Frontmatter（YAML）===
     lines.append("---")
     lines.append('brain_schema: "v1"')
     lines.append(f'type: {metadata["type"]}')
     lines.append(f'source_path: {metadata["path"]}')
-    lines.append(f'module: {full_module_name}')
+    lines.append(f"module: {full_module_name}")
 
-    # Exports (public API)
+    # Exports（公开 API）
     exports = [f["name"] for f in symbols["functions"] if not f["is_private"]]
     exports += [c["name"] for c in symbols["classes"] if not c["is_private"]]
     if exports:
@@ -322,14 +400,14 @@ def _generate_obsidian_md(
         for exp in exports:
             lines.append(f"  - {exp}")
 
-    # Dependencies (only internal wikilinks)
+    # Dependencies（仅内部 wikilinks）
     if dependencies["internal_imports"]:
         lines.append("dependencies:")
         for imp in dependencies["internal_imports"]:
             link_name = imp.split(".")[-1]
             lines.append(f'  - "[[{link_name}]]"')
 
-    # Symbols (with signature_hash and location_hint)
+    # Symbols（含 signature_hash 和 location_hint）
     all_symbols = []
     for func in symbols["functions"]:
         all_symbols.append(func)
@@ -341,8 +419,8 @@ def _generate_obsidian_md(
         for sym in all_symbols:
             lines.append(f'  - name: {sym["name"]}')
             sym_type = "function" if "args" in sym else "class"
-            lines.append(f'    type: {sym_type}')
-            # Escape signature for YAML (replace " with \")
+            lines.append(f"    type: {sym_type}")
+            # 对 YAML 转义签名中的引号
             escaped_sig = sym["signature"].replace('"', '\\"')
             lines.append(f'    signature: "{escaped_sig}"')
             lines.append(f'    signature_hash: "{sym["signature_hash"]}"')
@@ -353,20 +431,20 @@ def _generate_obsidian_md(
 
     # Metrics
     lines.append(f'lines_of_code: {metadata["lines_of_code"]}')
-    lines.append(f'last_analyzed: {metadata["last_analyzed"]}')
 
     # Tags
-    tags = _infer_tags(relative_path, symbols)
-    lines.append(f'tags: [{", ".join(tags)}]')
+    language = metadata["type"].split("-")[0] if "-" in metadata["type"] else "python"
+    tags = _infer_tags(relative_path, symbols, language)
+    lines.append(f"tags: [{', '.join(tags)}]")
 
     lines.append("---")
     lines.append("")
 
-    # === Header ===
+    # === 标题 ===
     lines.append(f"# {module_name}")
     lines.append("")
 
-    # Module docstring as callout
+    # 模块 docstring 作为 callout
     if metadata["module_docstring"]:
         lines.append("> [!info] Module Purpose")
         for line in metadata["module_docstring"].split("\n"):
@@ -379,7 +457,7 @@ def _generate_obsidian_md(
         lines.append("## Public API")
         lines.append("")
         for func in public_functions:
-            # Function signature
+            # 函数签名
             args_str = ", ".join(func["args"])
             signature = f'{func["name"]}({args_str})'
             if func["return_type"]:
@@ -411,7 +489,7 @@ def _generate_obsidian_md(
             lines.append("")
             lines.append(f'**Location**: `{relative_path}:{cls["lineno"]}` (hint)')
 
-            # Base classes
+            # 基类
             if cls["bases"]:
                 lines.append(f'**Inherits**: {", ".join(f"`{b}`" for b in cls["bases"])}')
 
@@ -424,7 +502,7 @@ def _generate_obsidian_md(
                     lines.append(f"> {line}")
                 lines.append("")
 
-            # Methods
+            # 方法
             if cls["methods"]:
                 public_methods = [m for m in cls["methods"] if not m["is_private"]]
                 private_methods = [m for m in cls["methods"] if m["is_private"]]
@@ -433,7 +511,7 @@ def _generate_obsidian_md(
                     lines.append("**Public Methods**:")
                     lines.append("")
                     for method in public_methods:
-                        # Method signature
+                        # 方法签名
                         args_str = ", ".join(method["args"])
                         method_sig = f'{method["name"]}({args_str})'
                         if method["return_type"]:
@@ -441,14 +519,16 @@ def _generate_obsidian_md(
 
                         lines.append(f"#### `{method_sig}`")
                         lines.append("")
-                        lines.append(f'**Location**: `{relative_path}:{method["lineno"]}` (hint)')
+                        lines.append(
+                            f'**Location**: `{relative_path}:{method["lineno"]}` (hint)'
+                        )
 
                         if method["is_async"]:
                             lines.append("**Type**: Async method")
 
                         lines.append("")
 
-                        # Method docstring
+                        # 方法 docstring
                         if method["docstring"]:
                             lines.append("> [!note] Method Documentation")
                             for line in method["docstring"].split("\n"):
@@ -465,7 +545,9 @@ def _generate_obsidian_md(
                         method_sig = f'{method["name"]}({args_str})'
                         if method["return_type"]:
                             method_sig += f' -> {method["return_type"]}'
-                        lines.append(f'- `{method_sig}` — `{relative_path}:{method["lineno"]}`')
+                        lines.append(
+                            f'- `{method_sig}` — `{relative_path}:{method["lineno"]}`'
+                        )
                     lines.append("")
                     lines.append("</details>")
                     lines.append("")
@@ -477,7 +559,7 @@ def _generate_obsidian_md(
         lines.append("## Dependencies")
         lines.append("")
 
-        # Internal (wikilinks)
+        # Internal（wikilinks）
         if dependencies["internal_imports"]:
             lines.append("**Internal**:")
             for imp in dependencies["internal_imports"]:
@@ -485,9 +567,10 @@ def _generate_obsidian_md(
                 lines.append(f"- [[{link_name}]]")
             lines.append("")
 
-        # External (code blocks)
+        # External（行内代码）
         external = [
-            imp for imp in dependencies["imports"]
+            imp
+            for imp in dependencies["imports"]
             if not imp.startswith(f"{project_name}.")
         ]
         if external:
@@ -496,7 +579,7 @@ def _generate_obsidian_md(
                 lines.append(f"- `{imp}`")
             lines.append("")
 
-    # === Footer ===
+    # === 页脚 ===
     lines.append("---")
     lines.append("")
     lines.append("**Navigation**: [[_PROJECT]] • [[_MODULES]]")

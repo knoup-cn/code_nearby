@@ -1,58 +1,44 @@
-"""Tree-sitter chunking of source files into symbol-level chunks (G1).
+"""Tree-sitter 源码分块——将源文件切分为符号级 Chunk 记录（G1）。
 
-Produces non-overlapping chunks per file:
+每个文件产出不重叠的 chunk：
 
-- one ``module`` chunk: imports + module docstring + top-level constants
-- one ``function`` chunk per module-level function (full source, incl. decorators)
-- one ``class`` chunk per class (the class *preamble*: header + docstring +
-  class-level attributes, i.e. everything before the first method)
-- one ``method`` chunk per method (full source); nested classes recurse
+- 一个 ``module`` chunk：import + 模块 docstring + 顶层常量
+- 每个模块级函数一个 ``function`` chunk（完整源码，含装饰器）
+- 每个类一个 ``class`` chunk（类头部 + docstring + 类级属性，不含方法体）
+- 每个方法一个 ``method`` chunk（完整源码）；嵌套类递归处理
 
-Nested functions stay inside their enclosing function's chunk (never truncated).
-Adding a language = register its suffix + parser in ``_parser`` and reuse the
-same generic node walk; the chunk schema does not change (G3).
+嵌套函数保留在父函数的 chunk 内（不截断）。
+新增语言 = 注册后缀 + 在 ``get_parser`` 中加入 parser 即可复用同一套节点遍历逻辑；
+chunk schema 不变（G3）。
 """
 
 from __future__ import annotations
 
 import re
-from functools import cache
 from pathlib import Path
 
-from tree_sitter import Language, Node, Parser
+from tree_sitter import Node
 
+from brain.lang_config import LanguageConfig, detect_language, get_config
 from brain.rag.schema import Chunk, base_chunk_id, compute_content_hash
-
-# suffix -> tree-sitter language name
-LANGUAGES_BY_SUFFIX: dict[str, str] = {".py": "python"}
-
-_FUNC = "function_definition"
-_CLASS = "class_definition"
-_DECORATED = "decorated_definition"
-_SYMBOL_WRAPPERS = (_FUNC, _CLASS, _DECORATED)
-
-
-@cache
-def _parser(language: str) -> Parser:
-    """Return a cached parser for a language (bundled grammar, no download)."""
-    if language == "python":
-        import tree_sitter_python as ts_python
-
-        return Parser(Language(ts_python.language()))
-    raise ValueError(f"Unsupported language: {language}")
-
-
-def detect_language(path: Path) -> str | None:
-    """Map a file suffix to a supported language name, or None."""
-    return LANGUAGES_BY_SUFFIX.get(path.suffix)
+from brain.tree_sitter_utils import (
+    collect_imports,
+    get_docstring,
+    get_module_docstring,
+    get_parser,
+    node_name,
+    node_slice,
+    node_text,
+    relative_path,
+    unwrap_decorated,
+)
 
 
 def chunk_file(file_path: Path, project_root: Path) -> list[Chunk]:
-    """Chunk a single file into symbol-level :class:`Chunk` records.
+    """将单个文件切分为符号级 :class:`Chunk` 记录。
 
-    Unsupported languages, read errors, or empty files yield no chunks. A parse
-    that produces no top-level symbols still yields the module chunk so the file
-    remains retrievable.
+    不支持的语言、读取错误或空文件返回空列表。
+    无法解析出顶层符号的也会产出 module chunk，保证文件可检索。
     """
     language = detect_language(file_path)
     if language is None:
@@ -65,23 +51,24 @@ def chunk_file(file_path: Path, project_root: Path) -> list[Chunk]:
     if not source.strip():
         return []
 
+    cfg = get_config(language)
     rel_path = relative_path(file_path, project_root)
     src = source.encode("utf-8")
-    root = _parser(language).parse(src).root_node
+    root = get_parser(language).parse(src).root_node
 
-    imports = _collect_imports(src, root)
+    imports = collect_imports(src, root, language)
     builder = _ChunkBuilder(rel_path=rel_path, language=language, src=src, imports=imports)
 
-    module_chunk = _module_chunk(src, root, builder)
-    if module_chunk is not None:
-        builder.add(module_chunk)
+    module_c = _module_chunk(src, root, builder, cfg)
+    if module_c is not None:
+        builder.add(module_c)
 
-    _walk_scope(root, scope=[], parent_class=None, builder=builder)
+    _walk_scope(root, scope=[], parent_class=None, builder=builder, cfg=cfg)
     return builder.chunks
 
 
 class _ChunkBuilder:
-    """Accumulates chunks for one file and resolves chunk_id collisions."""
+    """累积一个文件的所有 chunk，处理 chunk_id 冲突。"""
 
     def __init__(self, rel_path: str, language: str, src: bytes, imports: tuple[str, ...]):
         self.rel_path = rel_path
@@ -129,28 +116,44 @@ class _ChunkBuilder:
         self.chunks.append(chunk)
 
 
-# --- traversal -------------------------------------------------------------
+# ======================================================================
+# 遍历
+# ======================================================================
+
 
 def _walk_scope(
-    scope_node: Node, scope: list[str], parent_class: str | None, builder: _ChunkBuilder
+    scope_node: Node,
+    scope: list[str],
+    parent_class: str | None,
+    builder: _ChunkBuilder,
+    cfg: LanguageConfig,
 ) -> None:
-    """Emit chunks for the function/class symbols directly inside scope_node."""
-    body = scope_node.child_by_field_name("body") if scope_node.type == _CLASS else scope_node
+    """递归遍历 scope_node 内的函数/类符号，产出 chunk。"""
+    is_class = scope_node.type in cfg.class_types
+    body = scope_node.child_by_field_name("body") if is_class else scope_node
     if body is None:
         return
 
+    # 构建"需要处理的"节点类型集合：函数 + 类 + 装饰器 + export 等 wrapper
+    func_types = {cfg.func_type}
+    if cfg.method_func_types:
+        func_types.update(cfg.method_func_types)
+    symbol_types = func_types | set(cfg.class_types) | set(cfg.wrapper_types)
+    if cfg.decorated_type:
+        symbol_types.add(cfg.decorated_type)
+
     for child in body.named_children:
-        if child.type not in _SYMBOL_WRAPPERS:
+        if child.type not in symbol_types:
             continue
-        span_node, inner = _unwrap(child)
+        span_node, inner = unwrap_decorated(child, cfg)
         if inner is None:
             continue
-        name = _name_of(inner, builder.src)
+        name = node_name(inner, builder.src)
         if not name:
             continue
         qualified_name = ".".join([*scope, name])
 
-        if inner.type == _FUNC:
+        if inner.type in func_types:
             chunk_type = "method" if parent_class else "function"
             builder.add(
                 builder.make(
@@ -161,16 +164,16 @@ def _walk_scope(
                     start_line=span_node.start_point[0] + 1,
                     end_line=span_node.end_point[0] + 1,
                     signature=_signature(builder.src, span_node, inner),
-                    docstring=_docstring(builder.src, inner),
-                    content=_text(builder.src, span_node),
+                    docstring=get_docstring(builder.src, inner),
+                    content=node_text(builder.src, span_node),
                 )
             )
-            # nested functions remain part of this function's content
-        elif inner.type == _CLASS:
-            preamble_end = _class_preamble_end(inner)
+            # 嵌套函数保留在父函数 chunk 内，不递归
+        elif inner.type in cfg.class_types:
+            preamble_end = _class_preamble_end(inner, cfg)
             start_line = span_node.start_point[0] + 1
-            content = _slice(builder.src, span_node.start_byte, preamble_end)
-            # end_line bounds the preamble content (methods are separate chunks)
+            content = node_slice(builder.src, span_node.start_byte, preamble_end)
+            # end_line 限定在 preamble 范围内（方法拆分到独立 chunk）
             end_line = start_line + content.count("\n")
             builder.add(
                 builder.make(
@@ -181,22 +184,32 @@ def _walk_scope(
                     start_line=start_line,
                     end_line=end_line,
                     signature=_signature(builder.src, span_node, inner),
-                    docstring=_docstring(builder.src, inner),
+                    docstring=get_docstring(builder.src, inner),
                     content=content,
                 )
             )
-            _walk_scope(inner, scope=[*scope, name], parent_class=name, builder=builder)
+            _walk_scope(inner, scope=[*scope, name], parent_class=name, builder=builder, cfg=cfg)
 
 
-def _module_chunk(src: bytes, root: Node, builder: _ChunkBuilder) -> Chunk | None:
-    """Build the module chunk from top-level non-symbol statements."""
+def _module_chunk(
+    src: bytes, root: Node, builder: _ChunkBuilder, cfg: LanguageConfig
+) -> Chunk | None:
+    """从顶层非符号语句构建 module chunk。"""
+    # 构建需要排除的符号类型集合
+    func_types = {cfg.func_type}
+    if cfg.method_func_types:
+        func_types.update(cfg.method_func_types)
+    exclude_types = func_types | set(cfg.class_types) | set(cfg.wrapper_types)
+    if cfg.decorated_type:
+        exclude_types.add(cfg.decorated_type)
+
     parts: list[str] = []
     first_line = 0
     last_line = 0
     for child in root.named_children:
-        if child.type in _SYMBOL_WRAPPERS:
+        if child.type in exclude_types:
             continue
-        parts.append(_text(src, child))
+        parts.append(node_text(src, child))
         if first_line == 0:
             first_line = child.start_point[0] + 1
         last_line = child.end_point[0] + 1
@@ -213,122 +226,36 @@ def _module_chunk(src: bytes, root: Node, builder: _ChunkBuilder) -> Chunk | Non
         start_line=first_line,
         end_line=last_line,
         signature=symbol,
-        docstring=_module_docstring(src, root),
+        docstring=get_module_docstring(src, root),
         content="\n".join(parts),
     )
 
 
-# --- node helpers ----------------------------------------------------------
-
-def _unwrap(child: Node) -> tuple[Node, Node | None]:
-    """Return (span_node, inner_def). span_node includes decorators."""
-    if child.type == _DECORATED:
-        return child, child.child_by_field_name("definition")
-    return child, child
-
-
-def _name_of(node: Node, src: bytes) -> str:
-    name_node = node.child_by_field_name("name")
-    return _text(src, name_node) if name_node is not None else ""
+# ======================================================================
+# Chunker 专用 helper（不放入 tree_sitter_utils）
+# ======================================================================
 
 
 def _signature(src: bytes, span_node: Node, inner: Node) -> str:
-    """Decorators + def/class header up to the body, whitespace-collapsed."""
+    """装饰器 + def/class 头部（到 body 之前），合并空白。"""
     body = inner.child_by_field_name("body")
     end = body.start_byte if body is not None else inner.end_byte
-    header = _slice(src, span_node.start_byte, end)
+    header = node_slice(src, span_node.start_byte, end)
     header = re.sub(r"\s+", " ", header).strip()
     return header.rstrip().removesuffix(":").rstrip() + ":" if header else header
 
 
-def _class_preamble_end(class_node: Node) -> int:
-    """Byte offset of the first method/nested class, or class end if none."""
+def _class_preamble_end(class_node: Node, cfg: LanguageConfig) -> int:
+    """类体中第一个方法/嵌套类的字节偏移，无则返回类结束位置。"""
     body = class_node.child_by_field_name("body")
     if body is None:
         return class_node.end_byte
-    starts = [c.start_byte for c in body.named_children if c.type in _SYMBOL_WRAPPERS]
+
+    # 方法/嵌套类节点类型集合
+    method_types = set(cfg.method_func_types) if cfg.method_func_types else {cfg.func_type}
+    wrapper_types = method_types | set(cfg.class_types) | set(cfg.wrapper_types)
+    if cfg.decorated_type:
+        wrapper_types.add(cfg.decorated_type)
+
+    starts = [c.start_byte for c in body.named_children if c.type in wrapper_types]
     return min(starts) if starts else class_node.end_byte
-
-
-def _docstring(src: bytes, node: Node) -> str | None:
-    body = node.child_by_field_name("body")
-    return _first_string(src, body) if body is not None else None
-
-
-def _module_docstring(src: bytes, root: Node) -> str | None:
-    return _first_string(src, root)
-
-
-def _first_string(src: bytes, block: Node) -> str | None:
-    """Extract a leading docstring from a block/module's first statement."""
-    for child in block.named_children:
-        if child.type == "expression_statement" and child.named_child_count:
-            inner = child.named_children[0]
-            if inner.type == "string":
-                return _clean_string(src, inner)
-        break  # docstring must be the first statement
-    return None
-
-
-def _clean_string(src: bytes, string_node: Node) -> str:
-    """Return docstring text without quotes/prefix, dedented and stripped."""
-    for c in string_node.named_children:
-        if c.type == "string_content":
-            return _dedent(_text(src, c))
-    # fallback: strip surrounding quotes
-    raw = _text(src, string_node)
-    raw = re.sub(r'^[a-zA-Z]*("""|\'\'\'|"|\')', "", raw)
-    raw = re.sub(r'("""|\'\'\'|"|\')$', "", raw)
-    return _dedent(raw)
-
-
-def _dedent(text: str) -> str:
-    import textwrap
-
-    return textwrap.dedent(text).strip()
-
-
-def _collect_imports(src: bytes, root: Node) -> tuple[str, ...]:
-    """Collect module-level imported dotted names (best-effort, file-scoped)."""
-    names: list[str] = []
-    for child in root.named_children:
-        if child.type == "import_statement":
-            for n in child.named_children:
-                dotted = _dotted_name(src, n)
-                if dotted:
-                    names.append(dotted)
-        elif child.type == "import_from_statement":
-            module = child.child_by_field_name("module_name")
-            if module is not None:
-                dotted = _text(src, module)
-                if dotted:
-                    names.append(dotted)
-    # de-dup, preserve order
-    seen: set[str] = set()
-    ordered = [n for n in names if not (n in seen or seen.add(n))]
-    return tuple(ordered)
-
-
-def _dotted_name(src: bytes, node: Node) -> str:
-    if node.type == "dotted_name":
-        return _text(src, node)
-    if node.type == "aliased_import":
-        target = node.child_by_field_name("name")
-        return _text(src, target) if target is not None else ""
-    return ""
-
-
-def _text(src: bytes, node: Node) -> str:
-    return _slice(src, node.start_byte, node.end_byte)
-
-
-def _slice(src: bytes, start: int, end: int) -> str:
-    return src[start:end].decode("utf-8", errors="replace").rstrip()
-
-
-def relative_path(file_path: Path, project_root: Path) -> str:
-    """Repo-relative posix path for a file (falls back to the basename)."""
-    try:
-        return file_path.resolve().relative_to(project_root.resolve()).as_posix()
-    except ValueError:
-        return file_path.name

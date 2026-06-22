@@ -1,4 +1,4 @@
-"""Brain CLI"""
+"""Brain 命令行工具"""
 
 __all__ = ["__version__"]
 

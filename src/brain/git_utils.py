@@ -64,6 +64,12 @@ def get_tracked_files(repo_path: Path) -> list[Path]:
     return [repo_path / line for line in result.stdout.strip().splitlines() if line]
 
 
+def get_untracked_files(repo_path: Path) -> list[Path]:
+    """Get untracked, non-ignored files in a Git repository."""
+    result = _run_git(repo_path, ["ls-files", "--others", "--exclude-standard"])
+    return [repo_path / line for line in result.stdout.strip().splitlines() if line]
+
+
 def get_changed_files(repo_path: Path, since_commit: str | None = None) -> dict[str, list[Path]]:
     """Get changed files since last commit.
 
@@ -76,11 +82,14 @@ def get_changed_files(repo_path: Path, since_commit: str | None = None) -> dict[
     """
     changes = {"modified": [], "added": [], "deleted": []}
 
-    # Tracked files changes
+    # Tracked files changes since the reference commit, compared against the
+    # working tree (not HEAD) so uncommitted edits are detected too.
+    # --no-renames forces renames to surface as delete + add, matching the
+    # M/A/D parsing below.
     diff_args = (
-        ["diff", "--name-status", since_commit, "HEAD"]
+        ["diff", "--name-status", "--no-renames", since_commit]
         if since_commit
-        else ["diff", "--name-status", "HEAD"]
+        else ["diff", "--name-status", "--no-renames", "HEAD"]
     )
     result = _run_git(repo_path, diff_args)
 
@@ -101,10 +110,7 @@ def get_changed_files(repo_path: Path, since_commit: str | None = None) -> dict[
             changes["deleted"].append(file_path)
 
     # Untracked new files
-    result = _run_git(repo_path, ["ls-files", "--others", "--exclude-standard"])
-    for line in result.stdout.strip().splitlines():
-        if line:
-            changes["added"].append(repo_path / line)
+    changes["added"].extend(get_untracked_files(repo_path))
 
     return changes
 

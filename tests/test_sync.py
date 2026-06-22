@@ -335,3 +335,49 @@ class TestAnalyzeWithSync:
         assert result["synced"] is True
         assert result["sync_commit"] == "abc123"
         mock_sync.assert_called_once()
+
+
+class TestAnalyzeIncremental:
+    """End-to-end incremental analysis against real git repositories."""
+
+    def test_deleted_source_removes_markdown(
+        self, mock_kb_repo: Path, mock_project_repo: Path
+    ) -> None:
+        """Deleting a source file removes its markdown on the next analyze."""
+        src = mock_project_repo / "mod.py"
+        src.write_text('"""Module mod."""\n\ndef f():\n    pass\n')
+        subprocess.run(
+            ["git", "add", "mod.py"], cwd=mock_project_repo, check=True, capture_output=True
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "add mod"],
+            cwd=mock_project_repo,
+            check=True,
+            capture_output=True,
+        )
+
+        md = mock_kb_repo / "test" / "project" / "mod.md"
+
+        with patch("brain.config.load_config", return_value={"local_path": str(mock_kb_repo)}):
+            # First (full) analysis writes the markdown.
+            operations.analyze_project(mock_project_repo)
+            assert md.exists()
+
+            # Delete and commit, then re-analyze incrementally.
+            subprocess.run(
+                ["git", "rm", "mod.py"],
+                cwd=mock_project_repo,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "commit", "-m", "rm mod"],
+                cwd=mock_project_repo,
+                check=True,
+                capture_output=True,
+            )
+            result = operations.analyze_project(mock_project_repo)
+
+        assert result["success"] is True
+        assert result["deleted"] == 1
+        assert not md.exists()
