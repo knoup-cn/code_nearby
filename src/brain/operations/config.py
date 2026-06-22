@@ -49,12 +49,12 @@ def init_config(
 
 
 def get_status() -> dict | None:
-    """Get current configuration."""
+    """获取当前配置。"""
     return config.load_config() if config.is_initialized() else None
 
 
 def clear_config() -> bool:
-    """Clear configuration."""
+    """清除配置。"""
     if not config.is_initialized():
         return False
     config.get_config_path().unlink()
@@ -62,5 +62,5 @@ def clear_config() -> bool:
 
 
 def is_git_repo(path: Path) -> bool:
-    """Check if path is a Git repository."""
+    """检查路径是否为 Git 仓库。"""
     return git_utils.is_git_repo(path)

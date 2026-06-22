@@ -13,12 +13,12 @@ from brain.rag.index import RagIndex
 def analyze_project(
     project_path: Path, full_rebuild: bool = False, auto_sync: bool = False
 ) -> dict:
-    """Analyze source Git repository incrementally.
+    """增量分析源码 Git 仓库。
 
     Args:
-        project_path: Path to the source repository (read-only)
-        full_rebuild: Whether to rebuild knowledge base from scratch
-        auto_sync: Whether to automatically commit and push changes to the knowledge base
+        project_path: 源仓库路径（只读）
+        full_rebuild: 是否从头重建知识库
+        auto_sync: 是否自动提交并推送更改到知识库
 
     Returns:
         {
@@ -27,16 +27,16 @@ def analyze_project(
             "added": int,
             "modified": int,
             "deleted": int,
-            "kb_path": str | None,  # Project's knowledge base path (org/project)
-            "synced": bool | None,  # Whether changes were committed/pushed (if auto_sync=True)
-            "sync_commit": str | None,  # Commit hash if synced
+            "kb_path": str | None,  # 项目知识库路径（org/project）
+            "synced": bool | None,  # 更改是否已提交/推送（如果 auto_sync=True）
+            "sync_commit": str | None,  # 同步后的提交哈希
             "error": str | None
         }
     """
     from brain.operations.indexing import _generate_project_graph, _generate_project_index
     from brain.operations.sync import sync_knowledge_base
 
-    # Load knowledge base configuration
+    # 加载知识库配置
     cfg = config.load_config()
     kb_root = cfg.get("local_path")
     if not kb_root:
@@ -44,24 +44,24 @@ def analyze_project(
 
     kb_path = Path(kb_root)
 
-    # Ensure project has org/project structure in the knowledge base
+    # 确保项目在知识库中有 org/project 结构
     try:
         project_kb_path = storage.ensure_project_kb_path(kb_path, project_path)
     except RuntimeError as e:
         return {"success": False, "error": str(e)}
 
-    # Load project metadata
+    # 加载项目元数据
     metadata = storage.load_project_metadata(kb_path, project_path)
 
-    # Detect changes in the source repository
+    # 检测源仓库中的更改
     try:
         current_commit = git_utils.require_current_commit(project_path)
     except git_utils.GitCommandError as e:
         return {"success": False, "error": str(e)}
 
     if full_rebuild or not metadata:
-        # Full analysis: all tracked files plus untracked, non-ignored files
-        # (parity with the incremental path, which also picks up untracked).
+        # 完整分析：所有跟踪的文件加上未跟踪、未忽略的文件
+        # （与增量路径保持一致，增量路径也会拾取未跟踪文件）
         try:
             tracked_files = git_utils.get_tracked_files(project_path)
             untracked_files = git_utils.get_untracked_files(project_path)
@@ -70,23 +70,23 @@ def analyze_project(
 
         changes = {"modified": [], "added": tracked_files + untracked_files, "deleted": []}
     else:
-        # Incremental analysis
+        # 增量分析
         try:
             last_commit = metadata.get("last_commit")
             changes = git_utils.get_changed_files(project_path, last_commit)
         except git_utils.GitCommandError as e:
             return {"success": False, "error": str(e)}
 
-    # Execute analysis and update the knowledge base
+    # 执行分析并更新知识库
     for file_path in changes["added"] + changes["modified"]:
         if file_path.exists():
             analyzer.analyze_file(file_path, project_kb_path, project_path)
 
-    # Clean up deleted files from the knowledge base
+    # 从知识库中清理已删除的文件
     for file_path in changes["deleted"]:
         storage.remove_file_from_kb(project_kb_path, project_path, file_path)
 
-    # Update metadata in the knowledge base
+    # 更新知识库中的元数据
     storage.save_project_metadata(
         kb_path,
         project_path,
@@ -97,10 +97,10 @@ def analyze_project(
         },
     )
 
-    # Generate Obsidian index files
+    # 生成 Obsidian 索引文件
     _generate_project_index(project_kb_path, project_path)
 
-    # Generate dependency graph
+    # 生成依赖图
     _generate_project_graph(project_kb_path, project_path)
 
     total = len(changes["added"]) + len(changes["modified"])
@@ -116,7 +116,7 @@ def analyze_project(
         "error": None,
     }
 
-    # Auto-sync to the knowledge base repository if requested
+    # 如果请求，自动同步到知识库仓库
     if auto_sync and total > 0:
         changes_summary = (
             f"{result['added']} added, "
@@ -137,11 +137,11 @@ def analyze_project(
 
 
 def index_project(project_path: Path, full_rebuild: bool = False) -> dict:
-    """Build/update the Goal-2 lexical+structural RAG index for a project.
+    """构建/更新项目的 Goal-2 词法+结构化 RAG 索引。
 
-    Mirrors :func:`analyze_project` but writes a per-project SQLite FTS5 index
-    under ``{kb}/{org}/{project}/.rag/`` instead of Markdown. Incremental at the
-    chunk level (G4): only chunks whose content hash changed are re-indexed.
+    与 :func:`analyze_project` 类似，但将每个项目的 SQLite FTS5 索引写入
+    ``{kb}/{org}/{project}/.rag/`` 而不是 Markdown。在 chunk 级别增量更新（G4）：
+    仅重新索引内容哈希已更改的 chunk。
 
     Returns:
         {
@@ -249,7 +249,7 @@ def index_project(project_path: Path, full_rebuild: bool = False) -> dict:
 
 
 def _ensure_rag_gitignore(kb_path: Path) -> None:
-    """Keep the derived, binary ``.rag/`` index out of the knowledge-base repo."""
+    """将派生的、二进制的 ``.rag/`` 索引排除在知识库仓库之外。"""
     gitignore = kb_path / ".gitignore"
     rule = "**/.rag/"
     existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""

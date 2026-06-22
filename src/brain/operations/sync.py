@@ -9,22 +9,22 @@ from brain import git_utils
 def sync_knowledge_base(
     kb_path: Path, project_path: Path, changes_summary: str
 ) -> dict:
-    """Commit and push knowledge base changes.
+    """提交并推送知识库更改。
 
     Args:
-        kb_path: Knowledge base root path
-        project_path: Source project path (for commit message)
-        changes_summary: Summary of changes (e.g., "3 added, 2 modified, 1 deleted")
+        kb_path: 知识库根路径
+        project_path: 源项目路径（用于提交消息）
+        changes_summary: 更改摘要（如 "3 added, 2 modified, 1 deleted"）
 
     Returns:
         {
             "success": bool,
-            "commit": str | None,  # Commit hash if successful
-            "pushed": bool,  # Whether push succeeded
+            "commit": str | None,  # 成功时的提交哈希
+            "pushed": bool,  # 是否推送成功
             "error": str | None
         }
     """
-    # Check if KB is a git repository
+    # 检查知识库是否为 git 仓库
     if not git_utils.is_git_repo(kb_path):
         return {
             "success": False,
@@ -33,7 +33,7 @@ def sync_knowledge_base(
             "error": "Knowledge base is not a git repository",
         }
 
-    # Check if there are changes
+    # 检查是否有更改
     if not git_utils.has_changes(kb_path):
         return {
             "success": True,
@@ -43,7 +43,7 @@ def sync_knowledge_base(
         }
 
     try:
-        # Get project identity for commit message
+        # 获取项目标识用于提交消息
         remote_url = git_utils.get_remote_url(project_path)
         if remote_url:
             identity = git_utils.parse_repo_identity(remote_url)
@@ -51,14 +51,14 @@ def sync_knowledge_base(
         else:
             project_name = project_path.name
 
-        # Stage all changes
+        # 暂存所有更改
         git_utils.git_add(kb_path)
 
-        # Create commit
+        # 创建提交
         commit_message = f"Update {project_name}: {changes_summary}"
         commit_hash = git_utils.git_commit(kb_path, commit_message)
 
-        # Push to remote
+        # 推送到远程
         pushed = False
         push_error = None
         try:

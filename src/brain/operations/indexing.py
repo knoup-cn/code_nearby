@@ -9,15 +9,15 @@ from brain import git_utils
 
 
 def _generate_project_index(kb_path: Path, project_path: Path) -> None:
-    """Generate Obsidian index files (_PROJECT.md and _MODULES.md).
+    """生成 Obsidian 索引文件（_PROJECT.md 和 _MODULES.md）。
 
     Args:
-        kb_path: Project's knowledge base path (org/project/)
-        project_path: Source project path
+        kb_path: 项目知识库路径（org/project/）
+        project_path: 源项目路径
     """
     project_name = project_path.name
 
-    # Get org/project from git remote
+    # 从 git remote 获取 org/project
     remote_url = git_utils.get_remote_url(project_path)
     if remote_url:
         identity = git_utils.parse_repo_identity(remote_url)
@@ -25,13 +25,13 @@ def _generate_project_index(kb_path: Path, project_path: Path) -> None:
     else:
         org_name = "unknown"
 
-    # Collect all analyzed modules
+    # 收集所有已分析的模块
     modules: list[dict[str, str | int]] = []
     for md_file in kb_path.rglob("*.md"):
         if md_file.name.startswith("_"):
             continue
 
-        # Parse frontmatter to extract metadata
+        # 解析 frontmatter 提取元数据
         content = md_file.read_text(encoding="utf-8")
         if content.startswith("---"):
             yaml_end = content.find("---", 3)
@@ -155,35 +155,35 @@ def _generate_project_index(kb_path: Path, project_path: Path) -> None:
 
 
 def _generate_project_graph(kb_path: Path, project_path: Path) -> None:
-    """Generate dependency graph (_GRAPH.json).
+    """生成依赖图（_GRAPH.json）。
 
     Args:
-        kb_path: Project's knowledge base path (org/project/)
-        project_path: Source project path
+        kb_path: 项目知识库路径（org/project/）
+        project_path: 源项目路径
     """
     from brain import graph
 
     project_name = project_path.resolve().name
 
     try:
-        # Generate graph
+        # 生成图
         g = graph.generate_graph(kb_path, project_name)
-        # Save to _GRAPH.json
+        # 保存到 _GRAPH.json
         graph.save_graph(g, kb_path)
     except Exception as e:
-        # Don't fail the entire analyze operation if graph generation fails
+        # 如果图生成失败，不要让整个分析操作失败
         import sys
         print(f"Warning: Failed to generate graph: {e}", file=sys.stderr)
 
 
 def _parse_simple_yaml(yaml_text: str) -> dict[str, Any]:
-    """Parse simple YAML frontmatter (no external dependencies).
+    """解析简单的 YAML frontmatter（无外部依赖）。
 
     Args:
-        yaml_text: YAML text without --- markers
+        yaml_text: 不含 --- 标记的 YAML 文本
 
     Returns:
-        Parsed dictionary
+        解析后的字典
     """
     result: dict[str, Any] = {}
     current_key = None
