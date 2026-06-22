@@ -122,14 +122,8 @@ class SampleClass:
             assert "name" in sym
             assert "type" in sym
             assert "signature" in sym
-            assert "signature_hash" in sym
             assert "location_hint" in sym
             assert "is_private" in sym
-
-        # 检查 signature_hash 格式（8 个十六进制字符）
-        for sym in frontmatter["symbols"]:
-            assert len(sym["signature_hash"]) == 8
-            assert all(c in "0123456789abcdef" for c in sym["signature_hash"])
 
 
 def test_reanalysis_is_deterministic():
@@ -326,7 +320,6 @@ class MyClass:
     assert symbols["functions"][0]["name"] == "func1"
     assert symbols["functions"][0]["is_async"] is False
     assert "signature" in symbols["functions"][0]
-    assert "signature_hash" in symbols["functions"][0]
     assert symbols["functions"][1]["name"] == "async_func"
     assert symbols["functions"][1]["is_async"] is True
 
@@ -334,7 +327,6 @@ class MyClass:
     assert symbols["classes"][0]["name"] == "MyClass"
     assert len(symbols["classes"][0]["methods"]) == 1
     assert "signature" in symbols["classes"][0]
-    assert "signature_hash" in symbols["classes"][0]
 
 
 def test_infer_tags():

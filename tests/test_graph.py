@@ -28,7 +28,6 @@ symbols:
   - name: func1
     type: function
     signature: "def func1() -> None:"
-    signature_hash: "abc12345"
     location_hint: 10
     is_private: false
     is_async: false
@@ -52,7 +51,6 @@ symbols:
   - name: func2
     type: function
     signature: "def func2() -> None:"
-    signature_hash: "def67890"
     location_hint: 5
     is_private: false
     is_async: false
@@ -88,7 +86,7 @@ symbols:
         func1 = g["nodes"]["brain.module1.func1"]
         assert func1["type"] == "function"
         assert func1["parent"] == "brain.module1"
-        assert func1["signature_hash"] == "abc12345"
+        assert func1["signature"] == "def func1() -> None:"
         assert func1["location_hint"] == 10
         assert func1["is_private"] is False
         assert func1["is_async"] is False
@@ -123,7 +121,6 @@ symbols:
   - name: MyClass
     type: class
     signature: "class MyClass:"
-    signature_hash: "class123"
     location_hint: 5
     is_private: false
 ---

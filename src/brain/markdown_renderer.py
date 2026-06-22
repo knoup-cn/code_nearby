@@ -86,7 +86,7 @@ def _generate_frontmatter(
             link_name = imp.split(".")[-1]
             lines.append(f'  - "[[{link_name}]]"')
 
-    # 符号（含 signature_hash 和 location_hint）
+    # 符号（含 location_hint）
     all_symbols = symbols["functions"] + symbols["classes"]
     if all_symbols:
         lines.append("symbols:")
@@ -96,7 +96,6 @@ def _generate_frontmatter(
             lines.append(f"    type: {sym_type}")
             escaped_sig = sym["signature"].replace('"', '\\"')
             lines.append(f'    signature: "{escaped_sig}"')
-            lines.append(f'    signature_hash: "{sym["signature_hash"]}"')
             lines.append(f'    location_hint: {sym["lineno"]}')
             lines.append(f'    is_private: {str(sym["is_private"]).lower()}')
             if sym_type == "function":

@@ -87,7 +87,6 @@ def _add_nodes(md_file: Path, kb_path: Path, graph: dict[str, Any]) -> None:
             "type": symbol["type"],
             "parent": module_name,
             "signature": symbol.get("signature", ""),
-            "signature_hash": symbol.get("signature_hash", ""),
             "location_hint": symbol.get("location_hint", 0),
             "is_private": symbol.get("is_private", False),
         }

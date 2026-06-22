@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -147,7 +146,6 @@ def _extract_symbols(
             start_line = span_node.start_point[0] + 1
             end_line = span_node.end_point[0] + 1
             signature = extract_signature(lines, span_node, inner, format="multiline")
-            signature_hash = _compute_signature_hash(signature)
 
             symbols["functions"].append(
                 {
@@ -160,7 +158,6 @@ def _extract_symbols(
                     "is_private": cfg.is_private_symbol(name),
                     "is_async": is_async,
                     "signature": signature,
-                    "signature_hash": signature_hash,
                 }
             )
 
@@ -186,7 +183,6 @@ def _extract_symbols(
                     m_start = m_span.start_point[0] + 1
                     m_end = m_span.end_point[0] + 1
                     m_sig = extract_signature(lines, m_span, m_inner, format="multiline")
-                    m_sig_hash = _compute_signature_hash(m_sig)
 
                     methods.append(
                         {
@@ -199,14 +195,12 @@ def _extract_symbols(
                             "is_private": cfg.is_private_symbol(m_name),
                             "is_async": m_is_async,
                             "signature": m_sig,
-                            "signature_hash": m_sig_hash,
                         }
                     )
 
             start_line = span_node.start_point[0] + 1
             end_line = span_node.end_point[0] + 1
             signature = extract_signature(lines, span_node, inner, format="multiline")
-            signature_hash = _compute_signature_hash(signature)
 
             symbols["classes"].append(
                 {
@@ -218,7 +212,6 @@ def _extract_symbols(
                     "bases": bases,
                     "is_private": cfg.is_private_symbol(name),
                     "signature": signature,
-                    "signature_hash": signature_hash,
                 }
             )
 
@@ -302,16 +295,4 @@ def _dotted_name(src: bytes, node: Node) -> str:
         return node_text(src, target) if target is not None else ""
     return ""
 
-
-def _compute_signature_hash(signature: str) -> str:
-    """计算签名的 SHA256 哈希（前 8 个十六进制字符）。
-
-    Args:
-        signature: 函数/类签名
-
-    Returns:
-        8 字符的十六进制哈希
-    """
-    normalized = signature.strip()
-    return hashlib.sha256(normalized.encode()).hexdigest()[:8]
 
