@@ -9,6 +9,7 @@ from typer.testing import CliRunner
 
 from brain.cli import app
 from brain.config import load_config, save_config, validate_config
+from brain.operations.config import needs_overwrite
 
 runner = CliRunner()
 
@@ -53,12 +54,13 @@ def test_init_git_mode(tmp_path, monkeypatch):
     vault_path = tmp_path / "vault"
     monkeypatch.setattr("brain.config.get_config_path", lambda: config_file)
 
-    def mock_clone(repo_url: str, target_path: Path) -> tuple[bool, str]:
+    def mock_clone(repo_url: str, target_path: Path, overwrite: bool = False) -> tuple[bool, str]:
         target_path.mkdir(parents=True, exist_ok=True)
+        assert overwrite is False
         return True, "Cloned"
 
-    with patch("brain.config.test_git_connection", return_value=(True, "Connected")):
-        with patch("brain.config.clone_repo", side_effect=mock_clone):
+    with patch("brain.git_utils.test_git_connection", return_value=(True, "Connected")):
+        with patch("brain.git_utils.clone_repo", side_effect=mock_clone):
             result = runner.invoke(
                 app, ["init"], input=f"{vault_path}\nhttps://github.com/test/repo.git\n"
             )
@@ -75,19 +77,20 @@ def test_status_shows_config(tmp_path, monkeypatch):
     vault_path = tmp_path / "vault"
     monkeypatch.setattr("brain.config.get_config_path", lambda: config_file)
 
-    def mock_clone(repo_url: str, target_path: Path) -> tuple[bool, str]:
+    def mock_clone(repo_url: str, target_path: Path, overwrite: bool = False) -> tuple[bool, str]:
         target_path.mkdir(parents=True, exist_ok=True)
+        assert overwrite is False
         return True, "Cloned"
 
-    with patch("brain.config.test_git_connection", return_value=(True, "Connected")):
-        with patch("brain.config.clone_repo", side_effect=mock_clone):
+    with patch("brain.git_utils.test_git_connection", return_value=(True, "Connected")):
+        with patch("brain.git_utils.clone_repo", side_effect=mock_clone):
             runner.invoke(app, ["init"], input=f"{vault_path}\nhttps://github.com/test/repo.git\n")
 
     result = runner.invoke(app, ["status"])
 
     assert result.exit_code == 0
-    assert "Git repo:" in result.stdout
-    assert "Local path:" in result.stdout
+    assert "Knowledge base Git repo:" in result.stdout
+    assert "Knowledge base local path:" in result.stdout
 
 
 def test_clear_config(tmp_path, monkeypatch):
@@ -96,12 +99,13 @@ def test_clear_config(tmp_path, monkeypatch):
     vault_path = tmp_path / "vault"
     monkeypatch.setattr("brain.config.get_config_path", lambda: config_file)
 
-    def mock_clone(repo_url: str, target_path: Path) -> tuple[bool, str]:
+    def mock_clone(repo_url: str, target_path: Path, overwrite: bool = False) -> tuple[bool, str]:
         target_path.mkdir(parents=True, exist_ok=True)
+        assert overwrite is False
         return True, "Cloned"
 
-    with patch("brain.config.test_git_connection", return_value=(True, "Connected")):
-        with patch("brain.config.clone_repo", side_effect=mock_clone):
+    with patch("brain.git_utils.test_git_connection", return_value=(True, "Connected")):
+        with patch("brain.git_utils.clone_repo", side_effect=mock_clone):
             runner.invoke(app, ["init"], input=f"{vault_path}\nhttps://github.com/test/repo.git\n")
 
     result = runner.invoke(app, ["clear"], input="y\n")
@@ -110,3 +114,14 @@ def test_clear_config(tmp_path, monkeypatch):
     assert "Cleared" in result.stdout
     assert not config_file.exists()
 
+
+def test_needs_overwrite(tmp_path):
+    """Test overwrite detection for init."""
+    target = tmp_path / "vault"
+    assert not needs_overwrite(target)
+
+    target.mkdir()
+    assert not needs_overwrite(target)
+
+    (target / "file.md").write_text("x")
+    assert needs_overwrite(target)

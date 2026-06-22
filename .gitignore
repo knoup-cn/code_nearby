@@ -39,3 +39,6 @@ pip-wheel-metadata/
 .DS_Store
 Thumbs.db
 .ace-tool/
+
+# Local documentation
+docs/

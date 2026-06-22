@@ -9,7 +9,7 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 
-from brain import operations
+from brain.operations.config import clear_config, get_status, init_config, needs_overwrite
 
 
 class ConfirmDialog(ModalScreen):
@@ -133,7 +133,7 @@ class BrainApp(App):
 
     def _refresh(self) -> None:
         """Refresh UI based on configuration state."""
-        cfg = operations.get_status()
+        cfg = get_status()
         container = self.query_one("#main", ScrollableContainer)
         # Remove dynamic content only (keep title and status)
         for widget in list(container.children)[2:]:
@@ -148,41 +148,40 @@ class BrainApp(App):
 
     def _show_init_form(self, container: ScrollableContainer) -> None:
         """Show initialization form."""
-        default_vault = str(Path.home() / "brain-vault")
+        default_kb_path = str(Path.home() / "brain-vault")
 
         container.mount(
             Label("Initialize your knowledge base"),
-            Static("📁 Vault Path", classes="section"),
-            Input(placeholder=default_vault, value=default_vault, id="vault_path"),
-            Static("📦 Git Repository (optional)", classes="section"),
+            Static("📁 Knowledge Base Local Path", classes="section"),
+            Input(placeholder=default_kb_path, value=default_kb_path, id="local_path"),
+            Static("📦 Knowledge Base Git Repository", classes="section"),
             Input(placeholder="https://github.com/user/repo.git", id="git_repo"),
             Button("🚀 Initialize", id="init", variant="primary"),
         )
 
     def _show_configured(self, container: ScrollableContainer, cfg: dict) -> None:
         """Show configured state."""
-        vault = cfg.get("vault_path", "N/A")
-        git = cfg.get("git_repo", "Not synced")
-        mode = cfg.get("mode", "unknown")
+        local_path = cfg.get("local_path", "N/A")
+        git_repo = cfg.get("git_repo", "N/A")
 
         container.mount(
-            Label(f"Mode: {mode}"),
-            Static("📁 Vault", classes="section"),
-            Label(vault),
-            Static("📦 Git", classes="section"),
-            Label(git),
+            Static("📁 Knowledge Base Local Path", classes="section"),
+            Label(local_path),
+            Static("📦 Knowledge Base Git Repository", classes="section"),
+            Label(git_repo),
             Button("⚙️ Reconfigure", id="reconfig"),
             Button("❌ Clear", id="clear", variant="error"),
         )
 
     def _update_status(self) -> None:
         """Update status bar."""
-        cfg = operations.get_status()
+        cfg = get_status()
         if not cfg:
             self.status = "Not initialized"
         else:
-            vault = Path(cfg.get("vault_path", "")).name
-            git = "synced" if cfg.get("git_repo") else "local"
+            local_path = cfg.get("local_path", "")
+            vault = Path(local_path).name if local_path else "N/A"
+            git = "synced" if cfg.get("git_repo") else "not synced"
             self.status = f"{vault} ({git})"
 
     def _set_status(self, msg: str, error: bool = False) -> None:
@@ -198,7 +197,7 @@ class BrainApp(App):
         if btn_id == "init":
             self._handle_init()
         elif btn_id == "reconfig":
-            operations.clear_config()
+            clear_config()
             self._refresh()
             self._set_status("Ready to reconfigure")
         elif btn_id == "clear":
@@ -206,34 +205,33 @@ class BrainApp(App):
 
     def _handle_init(self) -> None:
         """Handle initialization."""
-        vault_input = self.query_one("#vault_path", Input)
+        local_input = self.query_one("#local_path", Input)
         git_input = self.query_one("#git_repo", Input)
 
-        vault_path = vault_input.value.strip()
-        git_repo = git_input.value.strip() or None
+        local_path = local_input.value.strip()
+        kb_git_repo = git_input.value.strip() or None
 
-        if not vault_path:
-            self._set_status("✗ Vault path required", True)
+        if not local_path:
+            self._set_status("✗ Knowledge base local path required", True)
             return
 
-        target = Path(vault_path).expanduser().resolve()
+        kb_path = Path(local_path).expanduser().resolve()
 
-        # Check for non-empty directory
-        if target.exists() and any(target.iterdir()):
+        if needs_overwrite(kb_path):
             self.push_screen(
                 ConfirmDialog("⚠️ Directory not empty. Overwrite?"),
-                lambda confirmed: self._complete_init(git_repo, target, confirmed)
+                lambda confirmed: self._complete_init(kb_git_repo, kb_path, confirmed),
             )
         else:
-            self._complete_init(git_repo, target, overwrite=False)
+            self._complete_init(kb_git_repo, kb_path, overwrite=False)
 
-    def _complete_init(self, git_repo: str | None, target: Path, overwrite: bool) -> None:
+    def _complete_init(self, git_repo: str | None, kb_path: Path, overwrite: bool) -> None:
         """Complete initialization after confirmation."""
-        if not overwrite and target.exists() and any(target.iterdir()):
+        if needs_overwrite(kb_path) and not overwrite:
             self._set_status("Initialization cancelled")
             return
 
-        success, msg = operations.init_config(git_repo, target, overwrite)
+        success, msg = init_config(git_repo, kb_path, overwrite)
 
         if success:
             self._refresh()
@@ -243,7 +241,7 @@ class BrainApp(App):
     def _handle_clear(self, confirmed: bool) -> None:
         """Handle clear configuration."""
         if confirmed:
-            operations.clear_config()
+            clear_config()
             self._refresh()
             self._set_status("✓ Cleared")
 
