@@ -18,6 +18,7 @@ from brain.tree_sitter_utils import (
     extract_base_classes,
     extract_parameters,
     extract_return_type,
+    extract_signature,
     get_docstring,
     get_module_docstring,
     get_parser,
@@ -145,7 +146,7 @@ def _extract_symbols(
             # 从源码提取签名
             start_line = span_node.start_point[0] + 1
             end_line = span_node.end_point[0] + 1
-            signature = _extract_signature(lines, start_line, end_line)
+            signature = extract_signature(lines, span_node, inner, format="multiline")
             signature_hash = _compute_signature_hash(signature)
 
             symbols["functions"].append(
@@ -184,7 +185,7 @@ def _extract_symbols(
                     m_return_type = extract_return_type(m_inner, src)
                     m_start = m_span.start_point[0] + 1
                     m_end = m_span.end_point[0] + 1
-                    m_sig = _extract_signature(lines, m_start, m_end)
+                    m_sig = extract_signature(lines, m_span, m_inner, format="multiline")
                     m_sig_hash = _compute_signature_hash(m_sig)
 
                     methods.append(
@@ -204,7 +205,7 @@ def _extract_symbols(
 
             start_line = span_node.start_point[0] + 1
             end_line = span_node.end_point[0] + 1
-            signature = _extract_signature(lines, start_line, end_line)
+            signature = extract_signature(lines, span_node, inner, format="multiline")
             signature_hash = _compute_signature_hash(signature)
 
             symbols["classes"].append(
@@ -224,30 +225,6 @@ def _extract_symbols(
     return symbols
 
 
-def _extract_signature(lines: list[str], start_line: int, end_line: int) -> str:
-    """从源码提取函数/类签名。
-
-    Args:
-        lines: 源码行列表
-        start_line: 起始行号（1-indexed）
-        end_line: 结束行号（1-indexed）
-
-    Returns:
-        签名文本（如 "def analyze_file(...):"）
-    """
-    # 提取 def/class 行（可能跨多行）
-    signature_lines = []
-    for i in range(start_line - 1, min(end_line, len(lines))):
-        line = lines[i].strip()
-        signature_lines.append(line)
-        # 遇到第一个以 ":" 结尾的行即停止
-        if line.endswith(":"):
-            break
-
-    return " ".join(signature_lines)
-
-
-def _compute_signature_hash(signature: str) -> str:
     """计算签名的 SHA256 哈希（前 8 个十六进制字符）。
 
     Args:
@@ -324,4 +301,17 @@ def _dotted_name(src: bytes, node: Node) -> str:
         target = node.child_by_field_name("name")
         return node_text(src, target) if target is not None else ""
     return ""
+
+
+def _compute_signature_hash(signature: str) -> str:
+    """计算签名的 SHA256 哈希（前 8 个十六进制字符）。
+
+    Args:
+        signature: 函数/类签名
+
+    Returns:
+        8 字符的十六进制哈希
+    """
+    normalized = signature.strip()
+    return hashlib.sha256(normalized.encode()).hexdigest()[:8]
 

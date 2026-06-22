@@ -71,7 +71,7 @@ def _generate_frontmatter(
         f"module: {full_module_name}",
     ]
 
-    # Exports（公开 API）
+    # 导出（公开 API）
     exports = [f["name"] for f in symbols["functions"] if not f["is_private"]]
     exports += [c["name"] for c in symbols["classes"] if not c["is_private"]]
     if exports:
@@ -79,14 +79,14 @@ def _generate_frontmatter(
         for exp in exports:
             lines.append(f"  - {exp}")
 
-    # Dependencies（仅内部 wikilinks）
+    # 依赖（仅内部 wikilinks）
     if dependencies["internal_imports"]:
         lines.append("dependencies:")
         for imp in dependencies["internal_imports"]:
             link_name = imp.split(".")[-1]
             lines.append(f'  - "[[{link_name}]]"')
 
-    # Symbols（含 signature_hash 和 location_hint）
+    # 符号（含 signature_hash 和 location_hint）
     all_symbols = symbols["functions"] + symbols["classes"]
     if all_symbols:
         lines.append("symbols:")
@@ -102,10 +102,10 @@ def _generate_frontmatter(
             if sym_type == "function":
                 lines.append(f'    is_async: {str(sym["is_async"]).lower()}')
 
-    # Metrics
+    # 指标
     lines.append(f'lines_of_code: {metadata["lines_of_code"]}')
 
-    # Tags
+    # 标签
     language = metadata["type"].split("-")[0] if "-" in metadata["type"] else "python"
     tags = _infer_tags(relative_path, symbols, language)
     lines.append(f"tags: [{', '.join(tags)}]")

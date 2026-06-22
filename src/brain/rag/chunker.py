@@ -23,6 +23,7 @@ from brain.lang_config import LanguageConfig, detect_language, get_config
 from brain.rag.schema import Chunk, base_chunk_id, compute_content_hash
 from brain.tree_sitter_utils import (
     collect_imports,
+    extract_signature,
     get_docstring,
     get_module_docstring,
     get_parser,
@@ -74,6 +75,7 @@ class _ChunkBuilder:
         self.rel_path = rel_path
         self.language = language
         self.src = src
+        self.source_lines = src.decode("utf-8", errors="replace").split("\n")
         self.imports = imports
         self.chunks: list[Chunk] = []
         self._seen_ids: set[str] = set()
@@ -163,7 +165,9 @@ def _walk_scope(
                     parent_class=parent_class,
                     start_line=span_node.start_point[0] + 1,
                     end_line=span_node.end_point[0] + 1,
-                    signature=_signature(builder.src, span_node, inner),
+                    signature=extract_signature(
+                        builder.source_lines, span_node, inner, format="compact"
+                    ),
                     docstring=get_docstring(builder.src, inner),
                     content=node_text(builder.src, span_node),
                 )
@@ -183,7 +187,9 @@ def _walk_scope(
                     parent_class=parent_class,
                     start_line=start_line,
                     end_line=end_line,
-                    signature=_signature(builder.src, span_node, inner),
+                    signature=extract_signature(
+                        builder.source_lines, span_node, inner, format="compact"
+                    ),
                     docstring=get_docstring(builder.src, inner),
                     content=content,
                 )
@@ -234,15 +240,6 @@ def _module_chunk(
 # ======================================================================
 # Chunker 专用 helper（不放入 tree_sitter_utils）
 # ======================================================================
-
-
-def _signature(src: bytes, span_node: Node, inner: Node) -> str:
-    """装饰器 + def/class 头部（到 body 之前），合并空白。"""
-    body = inner.child_by_field_name("body")
-    end = body.start_byte if body is not None else inner.end_byte
-    header = node_slice(src, span_node.start_byte, end)
-    header = re.sub(r"\s+", " ", header).strip()
-    return header.rstrip().removesuffix(":").rstrip() + ":" if header else header
 
 
 def _class_preamble_end(class_node: Node, cfg: LanguageConfig) -> int:

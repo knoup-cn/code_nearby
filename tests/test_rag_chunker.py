@@ -29,7 +29,8 @@ def test_detect_language() -> None:
     assert detect_language(Path("a.go")) == "go"
     assert detect_language(Path("a.js")) == "javascript"
     assert detect_language(Path("a.ts")) == "typescript"
-    assert detect_language(Path("a.java")) is None
+    assert detect_language(Path("a.java")) == "java"
+    assert detect_language(Path("a.cpp")) is None  # 不支持的语言
 
 
 def test_module_chunk_holds_imports_and_docstring(chunks: list[Chunk]) -> None:
@@ -94,9 +95,9 @@ def test_chunk_ids_unique_and_hashes_stable(chunks: list[Chunk]) -> None:
 
 
 def test_unsupported_language_returns_empty(tmp_path: Path) -> None:
-    """不支持的后缀（如 .java）应返回空列表。"""
-    f = tmp_path / "Main.java"
-    f.write_text("class Main {}")
+    """不支持的后缀（如 .cpp）应返回空列表。"""
+    f = tmp_path / "Main.cpp"
+    f.write_text("class Main {};")
     assert chunk_file(f, tmp_path) == []
 
 

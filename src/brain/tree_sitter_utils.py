@@ -225,3 +225,76 @@ def _dotted_name(src: bytes, node: Node) -> str:
         target = node.child_by_field_name("name")
         return node_text(src, target) if target is not None else ""
     return ""
+
+
+# ======================================================================
+# 签名提取（统一实现）
+# ======================================================================
+
+
+def extract_signature(
+    source_lines: list[str],
+    span_node: Node,
+    inner_node: Node,
+    format: str = "compact",
+) -> str:
+    """提取函数/类签名（统一实现）。
+
+    Args:
+        source_lines: 源码行列表
+        span_node: 包含装饰器的外层节点
+        inner_node: 实际的函数/类定义节点
+        format: "compact"（压缩空白为单行）或 "multiline"（保留格式）
+
+    Returns:
+        签名文本（如 "def foo(x: int) -> str:"）
+    """
+    if format == "compact":
+        return _extract_signature_compact(source_lines, span_node, inner_node)
+    else:
+        return _extract_signature_multiline(source_lines, span_node, inner_node)
+
+
+def _extract_signature_compact(
+    source_lines: list[str], span_node: Node, inner_node: Node
+) -> str:
+    """提取签名并压缩为单行（chunker 风格）。"""
+    # 从装饰器开始，提取到第一个 ":" 结尾的行
+    start_line = span_node.start_point[0]
+    end_line = inner_node.end_point[0]
+
+    # 提取相关行，到第一个以 ":" 结尾的行为止
+    signature_lines = []
+    for i in range(start_line, end_line + 1):
+        if i < len(source_lines):
+            line = source_lines[i].strip()
+            signature_lines.append(line)
+            # 遇到第一个以 ":" 结尾的行即停止（这是函数/类声明的结束）
+            if line.endswith(":"):
+                break
+
+    # 合并为单行，压缩空白
+    header = " ".join(signature_lines)
+    header = re.sub(r"\s+", " ", header).strip()
+
+    return header if header else ""
+
+
+def _extract_signature_multiline(
+    source_lines: list[str], span_node: Node, inner_node: Node
+) -> str:
+    """提取签名并保留多行格式（analyzer 风格）。"""
+    start_line = span_node.start_point[0] + 1  # 1-indexed
+    end_line = inner_node.end_point[0] + 1
+
+    # 提取 def/class 行（可能跨多行）
+    signature_lines = []
+    for i in range(start_line - 1, min(end_line, len(source_lines))):
+        line = source_lines[i].strip()
+        signature_lines.append(line)
+        # 遇到第一个以 ":" 结尾的行即停止
+        if line.endswith(":"):
+            break
+
+    return " ".join(signature_lines)
+

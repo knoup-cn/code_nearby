@@ -1,4 +1,4 @@
-"""Tests for analyzer module."""
+"""analyzer 模块测试。"""
 
 from __future__ import annotations
 
@@ -11,13 +11,13 @@ from brain import analyzer
 
 
 def test_analyze_python_file():
-    """Test basic Python file analysis."""
+    """测试基本的 Python 文件分析。"""
     with TemporaryDirectory() as tmpdir:
         project_root = Path(tmpdir)
         kb_path = Path(tmpdir) / "kb"
         kb_path.mkdir()
 
-        # Create a test Python file
+        # 创建测试 Python 文件
         test_file = project_root / "test_module.py"
         test_file.write_text(
             '''"""Test module docstring."""
@@ -43,43 +43,43 @@ class TestClass:
 '''
         )
 
-        # Analyze the file
+        # 分析文件
         analyzer.analyze_file(test_file, kb_path, project_root)
 
-        # Check output exists
+        # 检查输出是否存在
         output_file = kb_path / "test_module.md"
         assert output_file.exists()
 
         content = output_file.read_text()
 
-        # Check frontmatter
+        # 检查 frontmatter
         assert content.startswith("---")
         assert "brain_schema: \"v1\"" in content
         assert "type: python-module" in content
         assert "source_path: test_module.py" in content
 
-        # Check exports (only public functions/classes)
+        # 检查 exports（仅公开函数/类）
         assert "- public_function" in content
         assert "- TestClass" in content
 
-        # Check public API section
+        # 检查 Public API 章节
         assert "## Public API" in content
         assert "`public_function(arg1: str, arg2: int) -> bool`" in content
         assert "Public function docstring." in content
 
-        # Check classes section
+        # 检查 Classes 章节
         assert "## Classes" in content
         assert "`TestClass`" in content
         assert "Test class docstring." in content
         assert "`method(self)`" in content
 
-        # Check navigation
+        # 检查导航
         assert "[[_PROJECT]]" in content
         assert "[[_MODULES]]" in content
 
 
 def test_markdown_schema_v1():
-    """Test that generated Markdown conforms to schema v1."""
+    """测试生成的 Markdown 符合 schema v1。"""
     with TemporaryDirectory() as tmpdir:
         project_root = Path(tmpdir)
         kb_path = Path(tmpdir) / "kb"
@@ -105,7 +105,7 @@ class SampleClass:
         fm_parts = content.split("---", 2)
         frontmatter = yaml.safe_load(fm_parts[1])
 
-        # Check required fields
+        # 检查必需字段
         assert frontmatter["brain_schema"] == "v1"
         assert frontmatter["type"] == "python-module"
         assert frontmatter["source_path"] == "sample.py"
@@ -113,10 +113,10 @@ class SampleClass:
         assert "exports" in frontmatter
         assert "symbols" in frontmatter
         assert "lines_of_code" in frontmatter
-        # last_analyzed is intentionally absent: it made markdown non-deterministic
+        # last_analyzed 故意缺失：它会使 markdown 不确定
         assert "last_analyzed" not in frontmatter
 
-        # Check symbols structure
+        # 检查 symbols 结构
         assert len(frontmatter["symbols"]) == 2  # func1 + SampleClass
         for sym in frontmatter["symbols"]:
             assert "name" in sym
@@ -126,14 +126,14 @@ class SampleClass:
             assert "location_hint" in sym
             assert "is_private" in sym
 
-        # Check signature_hash format (8 hex chars)
+        # 检查 signature_hash 格式（8 个十六进制字符）
         for sym in frontmatter["symbols"]:
             assert len(sym["signature_hash"]) == 8
             assert all(c in "0123456789abcdef" for c in sym["signature_hash"])
 
 
 def test_reanalysis_is_deterministic():
-    """Re-analyzing unchanged source yields byte-identical markdown (no churn)."""
+    """重新分析未更改的源代码产生字节完全相同的 markdown（无变动）。"""
     with TemporaryDirectory() as tmpdir:
         project_root = Path(tmpdir)
         kb_path = project_root / "kb"
@@ -151,7 +151,7 @@ def test_reanalysis_is_deterministic():
         assert first == second
         assert "last_analyzed" not in first
 
-        # A real change to the documented surface must still be written.
+        # 实际的文档表面变更仍然必须被写入
         test_file.write_text('"""Module m, revised."""\n\ndef f() -> int:\n    return 1\n')
         analyzer.analyze_file(test_file, kb_path, project_root)
         third = (kb_path / "m.md").read_text()
@@ -161,7 +161,7 @@ def test_reanalysis_is_deterministic():
 
 
 def test_location_format():
-    """Test that location is marked as hint in the body."""
+    """测试位置信息在正文中标记为 hint。"""
     with TemporaryDirectory() as tmpdir:
         project_root = Path(tmpdir)
         kb_path = Path(tmpdir) / "kb"
@@ -178,21 +178,21 @@ def test_location_format():
         analyzer.analyze_file(test_file, kb_path, project_root)
         content = (kb_path / "loc_test.md").read_text()
 
-        # Check Location format includes (hint)
+        # 检查 Location 格式包含 (hint)
         assert "(hint)" in content
         assert "**Location**:" in content
 
 
 def test_analyze_file_with_internal_dependencies():
-    """Test analysis of file with internal imports."""
+    """测试包含内部 import 的文件分析。"""
     with TemporaryDirectory() as tmpdir:
-        # Create a project directory named 'brain' to match imports
+        # 创建名为 'brain' 的项目目录以匹配 import
         project_root = Path(tmpdir) / "brain"
         project_root.mkdir()
         kb_path = Path(tmpdir) / "kb"
         kb_path.mkdir()
 
-        # Create a test Python file with imports
+        # 创建包含 import 的测试 Python 文件
         test_file = project_root / "operations.py"
         test_file.write_text(
             '''"""Operations module."""
@@ -206,12 +206,12 @@ def do_something():
 '''
         )
 
-        # Analyze the file
+        # 分析文件
         analyzer.analyze_file(test_file, kb_path, project_root)
 
         content = (kb_path / "operations.md").read_text()
 
-        # Check internal dependencies are wikilinks
+        # 检查内部依赖是否为 wikilinks
         assert "## Dependencies" in content
         assert "**Internal**:" in content
         assert "[[analyzer]]" in content
@@ -220,15 +220,15 @@ def do_something():
 
 
 def test_analyze_file_with_custom_project_name():
-    """Test that internal import detection works with any project name."""
+    """测试内部 import 检测适用于任意项目名称。"""
     with TemporaryDirectory() as tmpdir:
-        # Create a project directory with a custom name
+        # 创建自定义名称的项目目录
         project_root = Path(tmpdir) / "myproject"
         project_root.mkdir()
         kb_path = Path(tmpdir) / "kb"
         kb_path.mkdir()
 
-        # Create a test Python file with imports matching the project name
+        # 创建与项目名称匹配的 import 的测试 Python 文件
         test_file = project_root / "main.py"
         test_file.write_text(
             '''"""Main module."""
@@ -243,38 +243,38 @@ def main():
 '''
         )
 
-        # Analyze the file
+        # 分析文件
         analyzer.analyze_file(test_file, kb_path, project_root)
 
         content = (kb_path / "main.md").read_text()
 
-        # Check internal dependencies are wikilinks
+        # 检查内部依赖是否为 wikilinks
         assert "## Dependencies" in content
         assert "**Internal**:" in content
         assert "[[utils]]" in content
         assert "[[config]]" in content
         assert "[[helpers]]" in content
 
-        # Check external dependency is code formatted
+        # 检查外部依赖是否为代码格式
         assert "**External**:" in content
         assert "`requests`" in content
 
 
 def test_analyze_file_skips_non_python():
-    """Test that non-Python files are skipped."""
+    """测试非 Python 文件被跳过。"""
     with TemporaryDirectory() as tmpdir:
         project_root = Path(tmpdir)
         kb_path = Path(tmpdir) / "kb"
         kb_path.mkdir()
 
-        # Create a non-Python file
+        # 创建非 Python 文件
         test_file = project_root / "README.md"
         test_file.write_text("# README")
 
-        # Analyze should skip it
+        # 分析应该跳过它
         analyzer.analyze_file(test_file, kb_path, project_root)
 
-        # No output should be created
+        # 不应创建输出
         assert not (kb_path / "README.md").exists()
 
 
@@ -302,7 +302,7 @@ def test_analyze_file_handles_syntax_error():
 
 
 def test_extract_symbols():
-    """Test symbol extraction."""
+    """测试符号提取。"""
     code = '''
 def func1():
     pass
@@ -338,7 +338,7 @@ class MyClass:
 
 
 def test_infer_tags():
-    """Test tag inference."""
+    """测试标签推断。"""
     from pathlib import Path
 
     from brain.markdown_renderer import _infer_tags
@@ -501,7 +501,7 @@ pub fn compute_sum(values: &[i32]) -> i32 {
 
 
 def test_multi_language_tags():
-    """验证不同语言产生各自的标签。"""
+    """测试不同语言产生各自的标签。"""
     from brain.markdown_renderer import _infer_tags
 
     path = Path("src/module.py")
