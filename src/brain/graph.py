@@ -64,7 +64,6 @@ def generate_graph(index: RagIndex, project_name: str) -> dict[str, Any]:
     for row in symbol_rows:
         module_name = _file_path_to_module(row["file_path"])
         if module_name not in graph["nodes"]:
-            # 孤立符号（没有 module chunk 的文件，不应出现但防御性处理）
             continue
 
         symbol_full = f"{module_name}.{row['symbol']}"
@@ -76,11 +75,8 @@ def generate_graph(index: RagIndex, project_name: str) -> dict[str, Any]:
             "location_hint": row["start_line"],
             "is_private": is_private,
         }
-        if row["chunk_type"] == "function":
-            node["is_async"] = False  # chunks 表不追踪 async，保留字段兼容
         graph["nodes"][symbol_full] = node
 
-        # 非私有符号计入模块 exports
         if not is_private:
             graph["nodes"][module_name]["exports"].append(row["symbol"])
 
@@ -146,7 +142,6 @@ def _file_path_to_module(file_path: str) -> str:
     """
     path = Path(file_path)
     parts = list(path.parts[:-1]) + [path.stem]
-    # 剥离常见源码根目录前缀
     if parts and parts[0] in ("src", "lib", "app", "pkg"):
         parts = parts[1:]
     return ".".join(parts)
@@ -186,14 +181,5 @@ def _import_to_candidate(imp: str) -> str:
 
 
 def _resolve_import(imp: str, module_names: set[str]) -> str | None:
-    """将一条 import 解析为图中的模块名。
-
-    先尝试精确匹配，再尝试后缀匹配（仅模块节点）。
-    外部依赖返回 None。
-    """
-    candidate = _import_to_candidate(imp)
-    # 精确匹配
-    if candidate in module_names:
-        return candidate
-    # 后缀匹配
-    return _resolve_dependency(candidate, module_names)
+    """将一条 import 解析为图中的模块名。外部依赖返回 None。"""
+    return _resolve_dependency(_import_to_candidate(imp), module_names)
