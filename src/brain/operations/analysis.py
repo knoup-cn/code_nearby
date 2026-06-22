@@ -3,23 +3,28 @@
 from __future__ import annotations
 
 import shutil
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from brain import config, git_utils, graph, storage
+from brain import config, fs_utils, graph, storage
 from brain.rag import chunker
 from brain.rag.index import RagIndex
+from brain.tree_sitter_utils import relative_path
 
 
-def run_full_analysis(project_path: Path, full_rebuild: bool = False) -> dict:
-    """分析源码仓库，产出 RAG 索引 + 依赖图。
+def run_full_analysis(
+    project_path: Path, full_rebuild: bool = False, kb_name: str | None = None
+) -> dict:
+    """分析源码目录，产出 RAG 索引 + 依赖图。
 
     一次文件变更检测 + 共享 CST 遍历，写入 SQLite FTS5 检索索引，
     并生成 ``_GRAPH.json`` 依赖图供检索时做结构加分。
 
     Args:
-        project_path: 源仓库路径
+        project_path: 源码目录路径
         full_rebuild: 是否从头重建
+        kb_name: 显式知识库名称（避免同名目录冲突）
 
     Returns:
         {
@@ -31,37 +36,66 @@ def run_full_analysis(project_path: Path, full_rebuild: bool = False) -> dict:
             "error": str | None,
         }
     """
-    # 获取知识库路径
     kb_path = config.get_kb_path()
 
     try:
-        project_kb_path = storage.ensure_project_kb_path(kb_path, project_path)
+        project_kb_path = storage.ensure_project_kb_path(
+            kb_path, project_path, kb_name=kb_name
+        )
     except RuntimeError as e:
         return {"success": False, "error": str(e)}
 
     metadata = storage.load_project_metadata(kb_path, project_path)
-    try:
-        current_commit = git_utils.require_current_commit(project_path)
-    except git_utils.GitCommandError as e:
-        return {"success": False, "error": str(e)}
 
-    # --- 检测变更 ---
-    if full_rebuild or not metadata:
-        try:
-            tracked = git_utils.get_tracked_files(project_path)
-            untracked = git_utils.get_untracked_files(project_path)
-        except git_utils.GitCommandError as e:
-            return {"success": False, "error": str(e)}
-        changes = {"modified": [], "added": tracked + untracked, "deleted": []}
-    else:
-        try:
-            last_commit = metadata.get("last_commit")
-            changes = git_utils.get_changed_files(project_path, last_commit)
-        except git_utils.GitCommandError as e:
-            return {"success": False, "error": str(e)}
+    # 时间锚点（替代 commit hash）
+    index_start_time = time.time()
 
-    # --- 准备 RAG 索引 ---
+    # --- 准备 RAG 目录 ---
     rag_dir = project_kb_path / ".rag"
+
+    # --- 文件发现 ---
+    if full_rebuild or not metadata:
+        all_files = fs_utils.discover_files(project_path)
+        changes: dict[str, list[Path]] = {
+            "added": all_files,
+            "modified": [],
+            "deleted": [],
+        }
+    else:
+        last_index_time = metadata.get("last_indexed_at", 0)
+        all_files = fs_utils.discover_files(project_path)
+        changed = fs_utils.detect_changed_files(
+            project_path, last_index_time, all_files
+        )
+
+        # 检测删除：索引中有但磁盘上没有的文件；同时区分新增 vs 修改
+        index_file = rag_dir / "index.sqlite3"
+        if index_file.exists():
+            idx = RagIndex.open(index_file)
+            try:
+                indexed_paths = set(idx.list_files())
+            finally:
+                idx.close()
+
+            current_paths = {
+                relative_path(f, project_path) for f in all_files
+            }
+
+            added = [
+                f for f in changed
+                if relative_path(f, project_path) not in indexed_paths
+            ]
+            modified = [
+                f for f in changed
+                if relative_path(f, project_path) in indexed_paths
+            ]
+            deleted = [
+                project_path / p for p in indexed_paths if p not in current_paths
+            ]
+            changes = {"added": added, "modified": modified, "deleted": deleted}
+        else:
+            # 无索引文件 → 视为全量
+            changes = {"added": all_files, "modified": [], "deleted": []}
     if full_rebuild:
         shutil.rmtree(rag_dir, ignore_errors=True)
     index = RagIndex.open(rag_dir / "index.sqlite3")
@@ -73,13 +107,15 @@ def run_full_analysis(project_path: Path, full_rebuild: bool = False) -> dict:
             if not file_path.exists():
                 continue
 
-            rel = chunker.relative_path(file_path, project_path)
+            rel = relative_path(file_path, project_path)
             new_chunks = chunker.chunk_file(file_path, project_path)
             existing = index.file_manifest(rel)
             new_by_id = {c.chunk_id: c for c in new_chunks}
 
             vanished = [cid for cid in existing if cid not in new_by_id]
-            to_upsert = [c for c in new_chunks if existing.get(c.chunk_id) != c.content_hash]
+            to_upsert = [
+                c for c in new_chunks if existing.get(c.chunk_id) != c.content_hash
+            ]
             chunks_deleted += index.delete_chunks(vanished)
             for chunk in to_upsert:
                 if chunk.chunk_id in existing:
@@ -90,7 +126,7 @@ def run_full_analysis(project_path: Path, full_rebuild: bool = False) -> dict:
 
         # 清理已删除文件
         for file_path in changes["deleted"]:
-            rel = chunker.relative_path(file_path, project_path)
+            rel = relative_path(file_path, project_path)
             chunks_deleted += index.delete_file(rel)
 
         total_chunks = index.count()
@@ -113,9 +149,7 @@ def run_full_analysis(project_path: Path, full_rebuild: bool = False) -> dict:
         project_path,
         {
             "last_analyzed": datetime.now(UTC).isoformat(),
-            "last_indexed": datetime.now(UTC).isoformat(),
-            "last_commit": current_commit,
-            "last_indexed_commit": current_commit,
+            "last_indexed_at": index_start_time,
             "kb_location": str(project_kb_path.relative_to(kb_path)),
             "rag_location": str(rag_dir.relative_to(kb_path)),
         },
@@ -135,5 +169,3 @@ def run_full_analysis(project_path: Path, full_rebuild: bool = False) -> dict:
         "kb_path": str(project_kb_path.relative_to(kb_path)),
         "error": None,
     }
-
-

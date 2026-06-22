@@ -2,14 +2,7 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from brain import config, git_utils
-
-
-def get_status() -> dict:
-    """获取当前配置，始终返回有效字典。"""
-    return config.load_config()
+from brain import config
 
 
 def clear_config() -> bool:
@@ -19,8 +12,3 @@ def clear_config() -> bool:
         path.unlink()
         return True
     return False
-
-
-def is_git_repo(path: Path) -> bool:
-    """检查路径是否为 Git 仓库。"""
-    return git_utils.is_git_repo(path)

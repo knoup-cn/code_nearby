@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -44,27 +43,10 @@ def test_clear_config(tmp_path, monkeypatch):
     assert not config_file.exists()
 
 
-def test_analyze_requires_git_repo(tmp_path, monkeypatch):
-    """Test analyze shows error when source is not a git repo."""
+def test_analyze_runs_on_source_directory(tmp_path, monkeypatch):
+    """Test analyze runs on a source directory (git not required)."""
     project = tmp_path / "project"
     project.mkdir()
-
-    def mock_get_kb_path():
-        return tmp_path / "kb"
-
-    monkeypatch.setattr("brain.cli.config.get_kb_path", mock_get_kb_path)
-
-    result = runner.invoke(app, ["analyze", str(project)])
-
-    assert result.exit_code == 1
-    assert "Not a source Git repository" in result.stdout
-
-
-def test_analyze_runs_on_git_repo(tmp_path, monkeypatch):
-    """Test analyze runs when source is a git repo."""
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".git").mkdir()
     kb_path = tmp_path / "kb"
     kb_path.mkdir()
 

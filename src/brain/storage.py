@@ -5,50 +5,48 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from brain import git_utils
 
-
-def get_project_kb_path(kb_path: Path, project_path: Path) -> Path:
+def get_project_kb_path(
+    kb_path: Path, project_path: Path, kb_name: str | None = None
+) -> Path:
     """获取项目的知识库子目录。
 
-    优先通过 git remote URL 推导 ``org/project`` 结构；
-    若不可用则回退到项目目录名。
+    优先使用显式传入的 *kb_name*，否则使用项目目录名。
 
     Args:
         kb_path: 知识库根目录
         project_path: 源项目目录
+        kb_name: 显式知识库名称（如 CLI ``--kb-name`` 传入），
+            用于避免同名目录冲突
 
     Returns:
-        {kb_path}/{org}/{project}/ 或 {kb_path}/{project_name}/ 格式的路径
+        ``{kb_path}/{kb_name}/`` 或 ``{kb_path}/{project_name}/`` 格式的路径
     """
-    remote_url = git_utils.get_remote_url(project_path)
-    if remote_url:
-        identity = git_utils.parse_repo_identity(remote_url)
-        if identity:
-            org, project = identity
-            return kb_path / org / project
-
-    return kb_path / project_path.resolve().name
+    name = kb_name or project_path.resolve().name
+    return kb_path / name
 
 
-def ensure_project_kb_path(kb_path: Path, project_path: Path) -> Path:
+def ensure_project_kb_path(
+    kb_path: Path, project_path: Path, kb_name: str | None = None
+) -> Path:
     """确保项目知识库目录存在并返回其路径。
 
     Args:
         kb_path: 知识库根目录
         project_path: 源项目目录
+        kb_name: 显式知识库名称
 
     Returns:
         项目知识库目录的路径
     """
-    project_kb_path = get_project_kb_path(kb_path, project_path)
+    project_kb_path = get_project_kb_path(kb_path, project_path, kb_name=kb_name)
     project_kb_path.mkdir(parents=True, exist_ok=True)
     return project_kb_path
 
 
 def load_project_metadata(kb_path: Path, project_path: Path) -> dict | None:
     """从知识库加载项目元数据。"""
-    metadata_file = kb_path / ".brain" / "metadata.json"
+    metadata_file = kb_path / "metadata.json"
     if not metadata_file.exists():
         return None
 
@@ -57,8 +55,8 @@ def load_project_metadata(kb_path: Path, project_path: Path) -> dict | None:
 
 
 def save_project_metadata(kb_path: Path, project_path: Path, updates: dict) -> None:
-    """Save project metadata to knowledge base."""
-    metadata_file = kb_path / ".brain" / "metadata.json"
+    """保存项目元数据到知识库。"""
+    metadata_file = kb_path / "metadata.json"
     metadata_file.parent.mkdir(parents=True, exist_ok=True)
 
     if metadata_file.exists():
