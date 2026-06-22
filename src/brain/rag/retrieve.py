@@ -3,7 +3,8 @@
 Two lexical recall channels (BM25 over content, trigram over symbols) are fused
 with Reciprocal Rank Fusion and de-duplicated, then nudged by a lightweight
 dependency-proximity boost from the existing ``_GRAPH.json`` (Aider-style
-structural ranking). No embeddings — dense recall slots in here later (进阶).
+structural ranking). Optional synonym expansion and heuristic reranking improve
+natural-language query recall without embeddings.
 """
 
 from __future__ import annotations
@@ -36,15 +37,29 @@ def search(
     path_glob: str | None = None,
     graph: dict | None = None,
     recall: int | None = None,
+    expand_synonyms: bool = False,
+    enable_rerank: bool = False,
 ) -> list[ScoredChunk]:
     """Return the top-``k`` chunks for a query, fused across channels.
 
     ``language`` / ``path_glob`` filter at the SQL level (C4). ``graph`` enables
     the dependency-proximity boost (C3 structural signal) when provided.
+
+    ``expand_synonyms`` expands the query with code-domain synonyms before
+    retrieval (zero-cost, no embedding). ``enable_rerank`` applies heuristic
+    score adjustments after fusion.
     """
     recall = recall or max(k * 4, 20)
-    bm25_ids = index.query_bm25(query, recall, language, path_glob)
-    symbol_ids = index.query_symbol(query, recall, language, path_glob)
+
+    # 可选：同义词扩展
+    search_query = query
+    if expand_synonyms:
+        from brain.rag.synonyms import expand_query
+
+        search_query = expand_query(query)
+
+    bm25_ids = index.query_bm25(search_query, recall, language, path_glob)
+    symbol_ids = index.query_symbol(search_query, recall, language, path_glob)
 
     scores = rrf_fuse([bm25_ids, symbol_ids], [BM25_WEIGHT, SYMBOL_WEIGHT])
     if not scores:
@@ -54,11 +69,17 @@ def search(
 
     ranked_ids = sorted(scores, key=lambda cid: (-scores[cid], cid))[:k]
     chunks = {c.chunk_id: c for c in index.get_chunks(ranked_ids)}
-    return [
+    results = [
         ScoredChunk(chunk=chunks[cid], score=round(scores[cid], 6))
         for cid in ranked_ids
         if cid in chunks
     ]
+
+    # 可选：启发式重排
+    if enable_rerank:
+        results = rerank_heuristic(results, query)
+
+    return results
 
 
 def rrf_fuse(
@@ -99,6 +120,54 @@ def apply_graph_boost(scores: dict[str, float], graph: dict) -> None:
         module = module_of(chunk_id)
         if module is not None and module in boost_modules:
             scores[chunk_id] += GRAPH_BOOST
+
+
+def rerank_heuristic(scored: list[ScoredChunk], query: str) -> list[ScoredChunk]:
+    """启发式分数微调——零成本提升排序质量。
+
+    在 RRF 融合后做小幅加分（所有调整均相加，保守幅度）：
+
+    1. 精确符号名命中查询词 → +0.05
+    2. qualified_name 包含查询词 → +0.03
+    3. 多个查询词命中内容 → +0.01 × (命中数-1)
+    4. 有 docstring → +0.02
+    5. 浅层级（顶层 API 优先）→ +0.01
+    """
+    query_terms = set(query.lower().split())
+    adjusted: list[ScoredChunk] = []
+
+    for sc in scored:
+        score = sc.score
+        content_lower = sc.chunk.content.lower()
+        sig_lower = sc.chunk.signature.lower()
+
+        # 1. 精确符号名命中
+        if sc.chunk.symbol.lower() in query_terms:
+            score += 0.05
+
+        # 2. qualified_name 包含查询词
+        qname_lower = sc.chunk.qualified_name.lower()
+        if qname_lower and any(t in qname_lower for t in query_terms):
+            score += 0.03
+
+        # 3. 多词命中密度
+        hits = sum(1 for t in query_terms if t in content_lower or t in sig_lower)
+        if hits > 1:
+            score += 0.01 * (hits - 1)
+
+        # 4. 有文档
+        if sc.chunk.docstring:
+            score += 0.02
+
+        # 5. 浅层级优先（每层 0.01，最多 0.05）
+        depth = sc.chunk.qualified_name.count(".") if sc.chunk.qualified_name else 0
+        score += 0.01 * (1.0 / max(1, depth))
+
+        adjusted.append(ScoredChunk(chunk=sc.chunk, score=round(score, 6)))
+
+    # 按调整后的分数重排
+    adjusted.sort(key=lambda s: (-s.score, s.chunk.chunk_id))
+    return adjusted
 
 
 def _adjacency(edges: list[dict]) -> dict[str, set[str]]:

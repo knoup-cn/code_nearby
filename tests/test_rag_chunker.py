@@ -80,9 +80,7 @@ def test_methods_carry_parent_class(chunks: list[Chunk]) -> None:
 
 def test_chunks_do_not_overlap(chunks: list[Chunk]) -> None:
     # non-module chunks partition the file without overlapping line spans
-    spans = sorted(
-        (c.start_line, c.end_line) for c in chunks if c.chunk_type != "module"
-    )
+    spans = sorted((c.start_line, c.end_line) for c in chunks if c.chunk_type != "module")
     for (_, prev_end), (next_start, _) in zip(spans, spans[1:], strict=False):
         assert next_start > prev_end
 

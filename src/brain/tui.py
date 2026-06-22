@@ -1,4 +1,5 @@
 """TUI (Text User Interface) mode for Brain."""
+
 from __future__ import annotations
 
 from pathlib import Path

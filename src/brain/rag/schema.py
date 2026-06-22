@@ -21,20 +21,20 @@ CHUNK_TYPES = ("module", "function", "class", "method")
 class Chunk:
     """A single retrievable code unit with its structural metadata."""
 
-    chunk_id: str            # stable id, unique within an index
-    file_path: str           # repo-relative, posix
-    language: str            # e.g. "python"
-    chunk_type: str          # one of CHUNK_TYPES
-    symbol: str              # leaf name (e.g. "analyze_file")
-    qualified_name: str      # in-file scope path (e.g. "Foo.method")
-    parent_class: str | None # enclosing class name, if any (G2 "所属类")
-    start_line: int          # 1-indexed, inclusive (includes decorators)
-    end_line: int            # 1-indexed, inclusive — full span, never truncated
-    imports: tuple[str, ...] # module-level imports in scope (file-scoped)
-    signature: str           # decorators + def/class header, whitespace-collapsed
+    chunk_id: str  # stable id, unique within an index
+    file_path: str  # repo-relative, posix
+    language: str  # e.g. "python"
+    chunk_type: str  # one of CHUNK_TYPES
+    symbol: str  # leaf name (e.g. "analyze_file")
+    qualified_name: str  # in-file scope path (e.g. "Foo.method")
+    parent_class: str | None  # enclosing class name, if any (G2 "所属类")
+    start_line: int  # 1-indexed, inclusive (includes decorators)
+    end_line: int  # 1-indexed, inclusive — full span, never truncated
+    imports: tuple[str, ...]  # module-level imports in scope (file-scoped)
+    signature: str  # decorators + def/class header, whitespace-collapsed
     docstring: str | None
-    content: str             # source body of the symbol
-    content_hash: str        # sha256(content) — G4 incremental key
+    content: str  # source body of the symbol
+    content_hash: str  # sha256(content) — G4 incremental key
 
     def to_row(self) -> dict[str, Any]:
         """Flatten to a SQLite-friendly row (imports joined by newline)."""

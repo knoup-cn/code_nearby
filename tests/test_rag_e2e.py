@@ -21,6 +21,7 @@ runner = CliRunner()
 
 # --- assembly --------------------------------------------------------------
 
+
 @pytest.fixture
 def index(tmp_path: Path) -> RagIndex:
     idx = RagIndex.open(tmp_path / "index.sqlite3")
@@ -83,6 +84,7 @@ def test_budget_keeps_smaller_lower_ranked_chunk() -> None:
 
 # --- CLI end-to-end --------------------------------------------------------
 
+
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
 
@@ -106,18 +108,16 @@ def wired_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
     kb = tmp_path / "kb"
     kb.mkdir()
-    monkeypatch.setattr(
-        config, "load_config", lambda: {"local_path": str(kb), "git_repo": "x"}
-    )
+    monkeypatch.setattr(config, "load_config", lambda: {"local_path": str(kb), "git_repo": "x"})
     # cli.operations and brain.storage both read config via the same module
     monkeypatch.chdir(repo)
     return repo
 
 
-def test_cli_index_then_search_json(wired_project: Path) -> None:
-    idx_result = runner.invoke(cli.app, ["index", "."])
-    assert idx_result.exit_code == 0, idx_result.output
-    assert "Indexed" in idx_result.output
+def test_cli_analyze_then_search_json(wired_project: Path) -> None:
+    result = runner.invoke(cli.app, ["analyze", "."])
+    assert result.exit_code == 0, result.output
+    assert "Analyzed" in result.output
 
     result = runner.invoke(cli.app, ["search", "verify token", "--json"])
     assert result.exit_code == 0, result.output
@@ -134,7 +134,7 @@ def test_cli_search_without_index_errors(wired_project: Path) -> None:
 
 
 def test_cli_search_human_output(wired_project: Path) -> None:
-    runner.invoke(cli.app, ["index", "."])
+    runner.invoke(cli.app, ["analyze", "."])
     result = runner.invoke(cli.app, ["search", "verify_token"])
     assert result.exit_code == 0
     assert "pkg/auth.py:4" in result.output

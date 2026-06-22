@@ -1,4 +1,5 @@
 """Test storage operations."""
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -14,7 +15,9 @@ def test_get_project_kb_path_github_https(tmp_path):
     project_path = tmp_path / "project"
     project_path.mkdir()
 
-    with patch("brain.git_utils.get_remote_url", return_value="https://github.com/octocat/hello-world.git"):
+    with patch(
+        "brain.git_utils.get_remote_url", return_value="https://github.com/octocat/hello-world.git"
+    ):
         result = storage.get_project_kb_path(kb_path, project_path)
 
     assert result == kb_path / "octocat" / "hello-world"
@@ -93,42 +96,3 @@ def test_metadata_includes_kb_location(tmp_path):
 
     metadata = storage.load_project_metadata(kb_path, project_path)
     assert metadata["kb_location"] == "org/project"
-
-
-def test_remove_file_from_kb_deletes_markdown(tmp_path):
-    """Deleting a source .py removes its mirrored .md (same relative path)."""
-    kb_path = tmp_path / "kb"
-    project_path = tmp_path / "project"
-    md = kb_path / "src" / "brain" / "foo.md"
-    md.parent.mkdir(parents=True)
-    md.write_text("# foo\n")
-
-    storage.remove_file_from_kb(
-        kb_path, project_path, project_path / "src" / "brain" / "foo.py"
-    )
-
-    assert not md.exists()
-
-
-def test_remove_file_from_kb_ignores_non_python(tmp_path):
-    """Non-Python source files never produced markdown, so they are left alone."""
-    kb_path = tmp_path / "kb"
-    project_path = tmp_path / "project"
-    kb_path.mkdir()
-    keep = kb_path / "README.md"
-    keep.write_text("# keep\n")
-
-    storage.remove_file_from_kb(kb_path, project_path, project_path / "README.md")
-
-    assert keep.exists()
-
-
-def test_remove_file_from_kb_missing_is_safe(tmp_path):
-    """Removing a file whose markdown is absent does not raise."""
-    kb_path = tmp_path / "kb"
-    project_path = tmp_path / "project"
-    kb_path.mkdir()
-
-    storage.remove_file_from_kb(
-        kb_path, project_path, project_path / "src" / "gone.py"
-    )

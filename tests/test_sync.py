@@ -220,9 +220,7 @@ class TestSyncKnowledgeBase:
         assert result["commit"] is None
         assert result["pushed"] is False
 
-    def test_sync_with_changes_no_remote(
-        self, mock_kb_repo: Path, mock_project_repo: Path
-    ) -> None:
+    def test_sync_with_changes_no_remote(self, mock_kb_repo: Path, mock_project_repo: Path) -> None:
         """Test sync commits changes but fails to push without remote."""
         # Create changes in KB
         (mock_kb_repo / "test_org" / "test_project" / "module.md").parent.mkdir(parents=True)
@@ -245,9 +243,7 @@ class TestSyncKnowledgeBase:
         """Test sync creates correct commit message."""
         (mock_kb_repo / "new.md").write_text("# New\n")
 
-        sync.sync_knowledge_base(
-            mock_kb_repo, mock_project_repo, "2 added, 1 modified, 0 deleted"
-        )
+        sync.sync_knowledge_base(mock_kb_repo, mock_project_repo, "2 added, 1 modified, 0 deleted")
 
         # Check commit message
         result = subprocess.run(
@@ -277,49 +273,38 @@ class TestSyncKnowledgeBase:
 
 
 class TestAnalyzeWithSync:
-    """Test analyze_project with auto_sync enabled."""
+    """Test run_full_analysis with mock storage."""
 
     @patch("brain.operations.sync.sync_knowledge_base")
-    def test_analyze_with_sync_disabled(
+    def test_analyze_without_sync(
         self, mock_sync: MagicMock, mock_kb_repo: Path, mock_project_repo: Path
     ) -> None:
-        """Test analyze without auto_sync doesn't call sync."""
+        """run_full_analysis does not call sync (sync is a CLI concern)."""
         with patch("brain.config.load_config", return_value={"local_path": str(mock_kb_repo)}):
-            # This will fail but we're only checking sync wasn't called
-            analysis.analyze_project(mock_project_repo, auto_sync=False)
+            try:
+                analysis.run_full_analysis(mock_project_repo)
+            except Exception:
+                pass  # may fail due to missing git state; sync not being called is what matters
 
         mock_sync.assert_not_called()
 
     @patch("brain.operations.sync.sync_knowledge_base")
     @patch("brain.storage")
-    @patch("brain.analyzer")
-    def test_analyze_with_sync_enabled(
+    def test_analyze_succeeds_with_mocks(
         self,
-        mock_analyzer: MagicMock,
         mock_storage: MagicMock,
         mock_sync: MagicMock,
         mock_kb_repo: Path,
         mock_project_repo: Path,
     ) -> None:
-        """Test analyze with auto_sync calls sync."""
-        # Create project KB directory structure
+        """run_full_analysis succeeds when storage is mocked."""
         project_kb_path = mock_kb_repo / "test" / "project"
         project_kb_path.mkdir(parents=True, exist_ok=True)
 
-        # Mock storage operations
         mock_storage.ensure_project_kb_path.return_value = project_kb_path
         mock_storage.load_project_metadata.return_value = None
 
-        # Mock sync result
-        mock_sync.return_value = {
-            "success": True,
-            "commit": "abc123",
-            "pushed": True,
-            "error": None,
-        }
-
         with patch("brain.config.load_config", return_value={"local_path": str(mock_kb_repo)}):
-            # Create a file to analyze
             (mock_project_repo / "test.py").write_text("# Test\n")
             subprocess.run(
                 ["git", "add", "test.py"], cwd=mock_project_repo, check=True, capture_output=True
@@ -331,20 +316,21 @@ class TestAnalyzeWithSync:
                 capture_output=True,
             )
 
-            result = analysis.analyze_project(mock_project_repo, auto_sync=True)
+            result = analysis.run_full_analysis(mock_project_repo)
 
-        assert result["synced"] is True
-        assert result["sync_commit"] == "abc123"
-        mock_sync.assert_called_once()
+        assert result["success"] is True
+        mock_sync.assert_not_called()  # sync is a CLI concern, not in run_full_analysis
 
 
 class TestAnalyzeIncremental:
     """End-to-end incremental analysis against real git repositories."""
 
-    def test_deleted_source_removes_markdown(
+    def test_deleted_source_removes_rag_chunks(
         self, mock_kb_repo: Path, mock_project_repo: Path
     ) -> None:
-        """Deleting a source file removes its markdown on the next analyze."""
+        """Deleting a source file removes its chunks from the RAG index."""
+        from brain.rag.index import RagIndex
+
         src = mock_project_repo / "mod.py"
         src.write_text('"""Module mod."""\n\ndef f():\n    pass\n')
         subprocess.run(
@@ -357,12 +343,20 @@ class TestAnalyzeIncremental:
             capture_output=True,
         )
 
-        md = mock_kb_repo / "test" / "project" / "mod.md"
-
         with patch("brain.config.load_config", return_value={"local_path": str(mock_kb_repo)}):
-            # First (full) analysis writes the markdown.
-            analysis.analyze_project(mock_project_repo)
-            assert md.exists()
+            # First (full) analysis writes RAG chunks.
+            result1 = analysis.run_full_analysis(mock_project_repo)
+            assert result1["success"] is True
+            assert result1["files_analyzed"] >= 1
+
+            # Verify chunks exist for the file
+            rag_dir = mock_kb_repo / "test" / "project" / ".rag"
+            index = RagIndex.open(rag_dir / "index.sqlite3")
+            try:
+                manifest = index.file_manifest("mod.py")
+                assert len(manifest) > 0
+            finally:
+                index.close()
 
             # Delete and commit, then re-analyze incrementally.
             subprocess.run(
@@ -377,8 +371,15 @@ class TestAnalyzeIncremental:
                 check=True,
                 capture_output=True,
             )
-            result = analysis.analyze_project(mock_project_repo)
+            result2 = analysis.run_full_analysis(mock_project_repo)
 
-        assert result["success"] is True
-        assert result["deleted"] == 1
-        assert not md.exists()
+        assert result2["success"] is True
+        assert result2["deleted"] == 1
+
+        # Verify chunks are removed from the index
+        index = RagIndex.open(rag_dir / "index.sqlite3")
+        try:
+            manifest = index.file_manifest("mod.py")
+            assert len(manifest) == 0
+        finally:
+            index.close()

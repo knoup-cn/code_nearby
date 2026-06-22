@@ -1,4 +1,5 @@
 """Command-line interface."""
+
 from __future__ import annotations
 
 import sys
@@ -6,8 +7,14 @@ from pathlib import Path
 
 import typer
 
-from brain.operations.analysis import analyze_project, index_project
-from brain.operations.config import clear_config, get_status, init_config, is_git_repo, needs_overwrite
+from brain.operations.analysis import run_full_analysis
+from brain.operations.config import (
+    clear_config,
+    get_status,
+    init_config,
+    is_git_repo,
+    needs_overwrite,
+)
 from brain.operations.sync import sync_knowledge_base
 
 app = typer.Typer(help="Brain - Knowledge Base Manager")
@@ -26,6 +33,7 @@ def callback(ctx: typer.Context) -> None:
     """Launch TUI if no command specified."""
     if ctx.invoked_subcommand is None:
         from .tui import run as run_tui
+
         run_tui()
 
 
@@ -97,209 +105,67 @@ def analyze(
     full: bool = typer.Option(False, "--full", help="Force full rebuild"),
     sync: bool = typer.Option(False, "--sync", help="Commit and push changes to knowledge base"),
 ) -> None:
-    """Analyze source Git repository and update knowledge base.
+    """Analyze source repository — produces RAG search index + dependency graph.
 
-    Analyzes code in a source Git repository incrementally and stores results
-    in the configured knowledge base. Only changed files are re-analyzed
-    unless --full is specified.
+    Detects changes once, generates a SQLite FTS5 search index and a
+    ``_GRAPH.json`` dependency graph in a single pass.
+    Only changed files are re-analyzed unless --full is specified.
 
     Use --sync to automatically commit and push changes to the knowledge
     base repository after analysis.
     """
     target_path = Path(target).resolve()
 
-    # Validate source repository
     if not is_git_repo(target_path):
         typer.secho(f"✗ Not a source Git repository: {target_path}", fg=typer.colors.RED)
         typer.echo("Initialize with: git init")
         raise typer.Exit(1)
 
-    # Validate knowledge base initialized
     cfg = get_status()
     if not cfg:
         typer.secho("⚠ Run 'brain init' first", fg=typer.colors.YELLOW)
         raise typer.Exit(1)
 
-    # Execute analysis
     typer.echo(f"Analyzing {target_path}...")
-    result = analyze_project(target_path, full_rebuild=full, auto_sync=sync)
+    result = run_full_analysis(target_path, full_rebuild=full)
 
-    # Output result
     if result["success"]:
         typer.secho(
             f"✓ Analyzed {result['files_analyzed']} files "
             f"({result['added']} added, {result['modified']} modified, "
-            f"{result['deleted']} deleted)",
+            f"{result['deleted']} deleted) — "
+            f"{result['chunks_total']} RAG chunks indexed",
             fg=typer.colors.GREEN,
         )
         if kb_location := result.get("kb_path"):
             typer.echo(f"Knowledge base: {kb_location}")
 
-        # Show sync status if enabled
-        if sync:
-            if result.get("synced"):
-                commit = result.get("sync_commit")
-                typer.secho(f"✓ Committed to knowledge base: {commit[:8]}", fg=typer.colors.GREEN)
-                if result.get("error"):
-                    typer.secho(f"⚠ Push failed: {result['error']}", fg=typer.colors.YELLOW)
-                    typer.echo("Run 'git push' manually in the knowledge base directory")
-            elif result["files_analyzed"] == 0:
-                typer.echo("No changes to sync")
+        if sync and result["files_analyzed"] > 0:
+            from brain.operations.sync import sync_knowledge_base
+
+            changes_summary = (
+                f"{result['added']} added, {result['modified']} modified, "
+                f"{result['deleted']} deleted"
+            )
+            sync_result = sync_knowledge_base(
+                Path(cfg["local_path"]), target_path, changes_summary=changes_summary
+            )
+            if sync_result["success"]:
+                commit = sync_result.get("commit")
+                if commit:
+                    typer.secho(
+                        f"✓ Committed to knowledge base: {commit[:8]}",
+                        fg=typer.colors.GREEN,
+                    )
+                if sync_result.get("pushed"):
+                    typer.secho("✓ Pushed to remote", fg=typer.colors.GREEN)
+                else:
+                    typer.secho("⚠ Push failed", fg=typer.colors.YELLOW)
             else:
-                typer.secho(f"✗ Sync failed: {result.get('error')}", fg=typer.colors.RED)
+                typer.secho(f"✗ Sync failed: {sync_result.get('error')}", fg=typer.colors.RED)
     else:
         typer.secho(f"✗ {result['error']}", fg=typer.colors.RED)
         raise typer.Exit(1)
-
-
-@app.command()
-def index(
-    target: str = typer.Argument(".", help="Path to source Git repository"),
-    full: bool = typer.Option(False, "--full", help="Force full rebuild of the index"),
-) -> None:
-    """Build or update the lexical+structural search index for a repository.
-
-    Chunks the repository with tree-sitter and stores a per-project SQLite FTS5
-    index under the knowledge base. Incremental by default (only changed files
-    since the last index are re-chunked); use --full to rebuild from scratch.
-    Query it with 'brain search'.
-    """
-    target_path = Path(target).resolve()
-
-    if not is_git_repo(target_path):
-        typer.secho(f"✗ Not a source Git repository: {target_path}", fg=typer.colors.RED)
-        typer.echo("Initialize with: git init")
-        raise typer.Exit(1)
-
-    if not get_status():
-        typer.secho("⚠ Run 'brain init' first", fg=typer.colors.YELLOW)
-        raise typer.Exit(1)
-
-    typer.echo(f"Indexing {target_path}...")
-    result = index_project(target_path, full_rebuild=full)
-
-    if not result["success"]:
-        typer.secho(f"✗ {result['error']}", fg=typer.colors.RED)
-        raise typer.Exit(1)
-
-    typer.secho(
-        f"✓ Indexed {result['files_indexed']} files "
-        f"({result['chunks_added']} added, {result['chunks_updated']} updated, "
-        f"{result['chunks_deleted']} removed; {result['chunks_total']} chunks total)",
-        fg=typer.colors.GREEN,
-    )
-    if kb_location := result.get("kb_path"):
-        typer.echo(f"Knowledge base: {kb_location}")
-
-
-@app.command()
-def context(
-    query: str = typer.Argument(..., help="Search query (module name, function name, or keywords)"),
-    max_results: int = typer.Option(5, "--max", "-n", help="Maximum number of results"),
-    project: str = typer.Option(
-        None,
-        "--project",
-        "-p",
-        help="Project path (defaults to current directory)",
-    ),
-    show_content: bool = typer.Option(False, "--content", "-c", help="Show full content"),
-    include_private: bool = typer.Option(False, "--private", help="Include private symbols"),
-) -> None:
-    """Search knowledge base for relevant context.
-
-    Searches the knowledge base for modules, functions, or classes matching
-    the query and returns relevant documentation with dependency context.
-
-    Examples:
-        brain context storage
-        brain context analyze_file --max 3
-        brain context "git operations" --content
-    """
-    # Validate knowledge base initialized
-    cfg = get_status()
-    if not cfg:
-        typer.secho("⚠ Run 'brain init' first", fg=typer.colors.YELLOW)
-        raise typer.Exit(1)
-
-    kb_path = Path(cfg["local_path"])
-
-    # Determine project path
-    if project:
-        project_path = Path(project).resolve()
-    else:
-        project_path = Path.cwd().resolve()
-
-    # Find project knowledge base
-    from brain import storage
-
-    project_kb_path = storage.get_project_kb_path(kb_path, project_path)
-    if not project_kb_path:
-        typer.secho(
-            f"⚠ No knowledge base found for project: {project_path.name}",
-            fg=typer.colors.YELLOW,
-        )
-        typer.echo("Run 'brain analyze' first to generate knowledge base.")
-        raise typer.Exit(1)
-
-    # Check if graph exists
-    graph_file = project_kb_path / "_GRAPH.json"
-    if not graph_file.exists():
-        typer.secho(
-            f"⚠ No graph found for project: {project_path.name}",
-            fg=typer.colors.YELLOW,
-        )
-        typer.echo("Run 'brain analyze' to generate knowledge base.")
-        raise typer.Exit(1)
-
-    # Search context
-    from brain import context as ctx_module
-
-    results = ctx_module.search_context(
-        kb_path=project_kb_path,
-        query=query,
-        max_results=max_results,
-        include_private=include_private,
-    )
-
-    if not results:
-        typer.secho(f"No results found for: {query}", fg=typer.colors.YELLOW)
-        raise typer.Exit(0)
-
-    # Display results
-    typer.secho(f"\nFound {len(results)} result(s) for '{query}':\n", fg=typer.colors.BLUE)
-
-    for i, result in enumerate(results, 1):
-        node = result["node"]
-        score = result["score"]
-
-        # Determine node type
-        node_type = "MODULE" if node.count(".") == 1 else "SYMBOL"
-
-        # Color by score
-        if score >= 0.9:
-            score_color = typer.colors.GREEN
-        elif score >= 0.7:
-            score_color = typer.colors.CYAN
-        else:
-            score_color = typer.colors.YELLOW
-
-        typer.secho(f"{i}. {node}", fg=typer.colors.WHITE, bold=True)
-        typer.secho(f"   Score: {score:.2f} | Type: {node_type}", fg=score_color)
-
-        if show_content:
-            # Show content preview (first 5 lines)
-            content_lines = result["content"].split("\n")
-            preview_lines = content_lines[:5]
-            typer.echo("   Content:")
-            for line in preview_lines:
-                typer.echo(f"   {line}")
-            if len(content_lines) > 5:
-                typer.secho(
-                    f"   ... ({len(content_lines) - 5} more lines)",
-                    fg=typer.colors.BRIGHT_BLACK,
-                )
-
-        typer.echo()
 
 
 @app.command()
@@ -316,7 +182,7 @@ def search(
 
     Runs BM25 + symbol (trigram) recall, fuses with RRF, applies a dependency
     graph boost, and returns token-budgeted chunks with file:line citations.
-    Requires 'brain index' to have been run for the project.
+    Requires 'brain analyze' to have been run for the project.
 
     Examples:
         brain search analyze_file
@@ -340,7 +206,7 @@ def search(
             f"⚠ No search index for project: {project_path.name}",
             fg=typer.colors.YELLOW,
         )
-        typer.echo("Run 'brain index' first to build the search index.")
+        typer.echo("Run 'brain analyze' first to build the search index.")
         raise typer.Exit(1)
 
     import json as _json
@@ -425,9 +291,7 @@ def sync() -> None:
 
     # Perform sync
     typer.echo("Syncing knowledge base...")
-    result = sync_knowledge_base(
-        kb_path, kb_path, changes_summary=f"{total_changes} files"
-    )
+    result = sync_knowledge_base(kb_path, kb_path, changes_summary=f"{total_changes} files")
 
     if result["success"]:
         commit = result.get("commit")

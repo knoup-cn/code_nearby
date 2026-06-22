@@ -207,6 +207,7 @@ class RagIndex:
 
 # --- text helpers ----------------------------------------------------------
 
+
 def _normalize_glob(pattern: str) -> str:
     """Map shell-style ``**`` onto SQLite GLOB semantics.
 
@@ -219,11 +220,26 @@ def _normalize_glob(pattern: str) -> str:
 
 
 def _search_blob(chunk: Chunk) -> str:
-    """Indexed text: signature + docstring + content + split identifiers."""
+    """构建 BM25 检索文本 blob。
+
+    包含：符号名 + 限定名 + imports + 签名 + docstring + 源码体 +
+    camelCase/snake_case 分词扩展。imports 被加入以支持"搜 parser →
+    命中所有 import parser 的 chunk"。
+    """
+    imports_text = " ".join(chunk.imports) if chunk.imports else ""
     base = "\n".join(
-        [chunk.symbol, chunk.qualified_name, chunk.signature, chunk.docstring or "", chunk.content]
+        [
+            chunk.symbol,
+            chunk.qualified_name,
+            imports_text,
+            chunk.signature,
+            chunk.docstring or "",
+            chunk.content,
+        ]
     )
-    extras = _split_identifiers(f"{chunk.symbol} {chunk.qualified_name} {chunk.content}")
+    extras = _split_identifiers(
+        f"{chunk.symbol} {chunk.qualified_name} {imports_text} {chunk.content}"
+    )
     return f"{base}\n{extras}" if extras else base
 
 

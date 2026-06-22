@@ -1,4 +1,5 @@
 """知识库 Git 同步。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,9 +7,7 @@ from pathlib import Path
 from brain import git_utils
 
 
-def sync_knowledge_base(
-    kb_path: Path, project_path: Path, changes_summary: str
-) -> dict:
+def sync_knowledge_base(kb_path: Path, project_path: Path, changes_summary: str) -> dict:
     """提交并推送知识库更改。
 
     Args:

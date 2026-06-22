@@ -1,4 +1,8 @@
-"""Graph generation for knowledge base."""
+"""依赖图生成——从 RAG 索引构建模块依赖关系图。
+
+从 SQLite chunks 表读取模块、符号和 import 信息，构建带节点和边的
+依赖图，保存为 ``_GRAPH.json``。供检索时做依赖邻近度加分（graph boost）。
+"""
 
 from __future__ import annotations
 
@@ -7,18 +11,23 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import yaml
+from brain.rag.index import RagIndex
 
 
-def generate_graph(kb_path: Path, project_name: str) -> dict[str, Any]:
-    """Generate dependency graph from all Markdown files.
+def generate_graph(index: RagIndex, project_name: str) -> dict[str, Any]:
+    """从 RAG 索引构建依赖图。
+
+    读取 chunks 表中的 module / function / class 记录，组装：
+    - 模块节点（含 source_path、exports、行数）
+    - 符号节点（函数/类，含签名、位置提示）
+    - import 边（模块间的依赖关系）
 
     Args:
-        kb_path: Knowledge base root path
-        project_name: Project name (e.g., "brain")
+        index: RAG 索引实例
+        project_name: 项目名称
 
     Returns:
-        Graph dictionary with nodes and edges
+        包含 nodes、edges、stats 的图字典
     """
     graph: dict[str, Any] = {
         "schema_version": "v1",
@@ -28,19 +37,75 @@ def generate_graph(kb_path: Path, project_name: str) -> dict[str, Any]:
         "edges": [],
     }
 
-    # Scan all Markdown files
-    md_files = list(kb_path.glob("**/*.md"))
-    md_files = [f for f in md_files if not f.name.startswith("_")]
+    conn = index._conn
 
-    # First pass: add all nodes
-    for md_file in md_files:
-        _add_nodes(md_file, kb_path, graph)
+    # 第一遍：module chunk → 模块节点
+    module_rows = conn.execute(
+        "SELECT file_path, language, imports, content FROM chunks WHERE chunk_type = 'module'"
+    ).fetchall()
 
-    # Second pass: add edges (now all nodes exist)
-    for md_file in md_files:
-        _add_edges(md_file, graph)
+    for row in module_rows:
+        module_name = _file_path_to_module(row["file_path"])
+        graph["nodes"][module_name] = {
+            "type": "module",
+            "md_path": "",
+            "source_path": row["file_path"],
+            "exports": [],
+            "lines_of_code": row["content"].count("\n") + 1,
+        }
 
-    # Add statistics
+    # 第二遍：function / class chunk → 符号节点 + 填充模块 exports
+    symbol_rows = conn.execute(
+        "SELECT file_path, chunk_type, symbol, qualified_name, "
+        "signature, start_line FROM chunks "
+        "WHERE chunk_type IN ('function', 'class')"
+    ).fetchall()
+
+    for row in symbol_rows:
+        module_name = _file_path_to_module(row["file_path"])
+        if module_name not in graph["nodes"]:
+            # 孤立符号（没有 module chunk 的文件，不应出现但防御性处理）
+            continue
+
+        symbol_full = f"{module_name}.{row['symbol']}"
+        is_private = row["symbol"].startswith("_")
+        node: dict[str, Any] = {
+            "type": row["chunk_type"],
+            "parent": module_name,
+            "signature": row["signature"],
+            "location_hint": row["start_line"],
+            "is_private": is_private,
+        }
+        if row["chunk_type"] == "function":
+            node["is_async"] = False  # chunks 表不追踪 async，保留字段兼容
+        graph["nodes"][symbol_full] = node
+
+        # 非私有符号计入模块 exports
+        if not is_private:
+            graph["nodes"][module_name]["exports"].append(row["symbol"])
+
+    # 第三遍：从模块 imports 构建边
+    module_names = {name for name, node in graph["nodes"].items() if node.get("type") == "module"}
+
+    for row in module_rows:
+        module_name = _file_path_to_module(row["file_path"])
+        imports_raw = row["imports"] or ""
+        for imp in imports_raw.split("\n"):
+            imp = imp.strip()
+            if not imp:
+                continue
+            dep_module = _resolve_import(imp, module_names)
+            if dep_module and dep_module != module_name:
+                edge = {
+                    "from": module_name,
+                    "to": dep_module,
+                    "type": "imports",
+                    "metadata": {},
+                }
+                if edge not in graph["edges"]:
+                    graph["edges"].append(edge)
+
+    # 统计
     graph["stats"] = {
         "total_modules": sum(1 for n in graph["nodes"].values() if n["type"] == "module"),
         "total_symbols": sum(
@@ -52,160 +117,83 @@ def generate_graph(kb_path: Path, project_name: str) -> dict[str, Any]:
     return graph
 
 
-def _add_nodes(md_file: Path, kb_path: Path, graph: dict[str, Any]) -> None:
-    """Add nodes from a single Markdown file.
-
-    Args:
-        md_file: Path to Markdown file
-        kb_path: Knowledge base root path
-        graph: Graph dictionary to update
-    """
-    content = md_file.read_text()
-
-    # Parse frontmatter
-    frontmatter = _parse_frontmatter(content)
-    if not frontmatter or frontmatter.get("brain_schema") != "v1":
-        return
-
-    module_name = frontmatter.get("module")
-    if not module_name:
-        return
-
-    # Add module node
-    graph["nodes"][module_name] = {
-        "type": "module",
-        "md_path": str(md_file.relative_to(kb_path.parent)),
-        "source_path": frontmatter.get("source_path", ""),
-        "exports": frontmatter.get("exports", []),
-        "lines_of_code": frontmatter.get("lines_of_code", 0),
-    }
-
-    # Add symbol nodes
-    for symbol in frontmatter.get("symbols", []):
-        symbol_full_name = f"{module_name}.{symbol['name']}"
-        graph["nodes"][symbol_full_name] = {
-            "type": symbol["type"],
-            "parent": module_name,
-            "signature": symbol.get("signature", ""),
-            "location_hint": symbol.get("location_hint", 0),
-            "is_private": symbol.get("is_private", False),
-        }
-
-        # Add is_async for functions
-        if symbol["type"] == "function":
-            graph["nodes"][symbol_full_name]["is_async"] = symbol.get("is_async", False)
-
-
-def _add_edges(md_file: Path, graph: dict[str, Any]) -> None:
-    """Add edges from a single Markdown file.
-
-    Args:
-        md_file: Path to Markdown file
-        graph: Graph dictionary to update
-    """
-    content = md_file.read_text()
-
-    # Parse frontmatter
-    frontmatter = _parse_frontmatter(content)
-    if not frontmatter or frontmatter.get("brain_schema") != "v1":
-        return
-
-    module_name = frontmatter.get("module")
-    if not module_name:
-        return
-
-    # Add import edges
-    dependencies = frontmatter.get("dependencies", [])
-    for dep in dependencies:
-        # Extract module name from wikilink [[module]]
-        dep_clean = dep.strip('[]"')
-        # Try to find full module name
-        dep_module = _resolve_dependency(dep_clean, graph["nodes"])
-        if dep_module:
-            edge = {
-                "from": module_name,
-                "to": dep_module,
-                "type": "imports",
-                "metadata": {},
-            }
-            # Avoid duplicates
-            if edge not in graph["edges"]:
-                graph["edges"].append(edge)
-
-
-def _process_markdown(md_file: Path, kb_path: Path, graph: dict[str, Any]) -> None:
-    """Process a single Markdown file and add to graph (deprecated).
-
-    This function is deprecated. Use _add_nodes() and _add_edges() instead.
-
-    Args:
-        md_file: Path to Markdown file
-        kb_path: Knowledge base root path
-        graph: Graph dictionary to update
-    """
-    _add_nodes(md_file, kb_path, graph)
-    _add_edges(md_file, graph)
-
-
-def _parse_frontmatter(content: str) -> dict[str, Any] | None:
-    """Parse YAML frontmatter from Markdown.
-
-    Args:
-        content: Markdown content
-
-    Returns:
-        Parsed frontmatter or None if not found
-    """
-    if not content.startswith("---"):
-        return None
-
-    parts = content.split("---", 2)
-    if len(parts) < 3:
-        return None
-
-    try:
-        return yaml.safe_load(parts[1])
-    except yaml.YAMLError:
-        return None
-
-
-def _resolve_dependency(dep_name: str, nodes: dict[str, Any]) -> str | None:
-    """Resolve a dependency name to a full module name.
-
-    Import dependencies always point at modules, so resolution is restricted to
-    module nodes. This prevents colliding with a symbol that happens to share the
-    dependency's leaf name (e.g. a CLI command ``context`` vs. the ``brain.context``
-    module). Suffix matches are sorted so the result is deterministic regardless of
-    node insertion order.
-
-    Args:
-        dep_name: Dependency name from a wikilink (e.g., "storage" or "brain.storage")
-        nodes: All graph nodes
-
-    Returns:
-        Full module name (e.g., "brain.storage") or None
-    """
-    module_names = [name for name, node in nodes.items() if node.get("type") == "module"]
-
-    # Try exact match first
-    if dep_name in module_names:
-        return dep_name
-
-    # Fall back to a suffix match against module nodes only (deterministic)
-    candidates = sorted(name for name in module_names if name.endswith(f".{dep_name}"))
-    return candidates[0] if candidates else None
-
-
 def save_graph(graph: dict[str, Any], kb_path: Path) -> Path:
-    """Save graph to _GRAPH.json.
+    """保存图到 _GRAPH.json。
 
     Args:
-        graph: Graph dictionary
-        kb_path: Knowledge base root path
+        graph: 图字典
+        kb_path: 知识库根路径
 
     Returns:
-        Path to saved graph file
+        保存的图文件路径
     """
     graph_file = kb_path / "_GRAPH.json"
     graph_file.write_text(json.dumps(graph, indent=2))
     return graph_file
+
+
+# ======================================================================
+# 辅助函数
+# ======================================================================
+
+
+def _file_path_to_module(file_path: str) -> str:
+    """将仓库相对路径转换为点分模块名。
+
+    ``src/brain/analyzer.py`` → ``brain.analyzer``
+    ``lib/utils/helpers.go`` → ``utils.helpers``
+    ``app/components/Button.tsx`` → ``components.Button``
+    """
+    path = Path(file_path)
+    parts = list(path.parts[:-1]) + [path.stem]
+    # 剥离常见源码根目录前缀
+    if parts and parts[0] in ("src", "lib", "app", "pkg"):
+        parts = parts[1:]
+    return ".".join(parts)
+
+
+def _resolve_dependency(dep_name: str, module_names: set[str]) -> str | None:
+    """将依赖名解析为完整模块名。
+
+    Import 依赖始终指向模块，因此解析限定在模块节点范围内。
+    这防止了与恰好共享依赖叶子名的符号冲突（例如 CLI 命令 ``context``
+    和 ``brain.context`` 模块）。
+
+    Args:
+        dep_name: 依赖名（如 "storage" 或 "brain.storage"）
+        module_names: 图中所有模块名的集合
+
+    Returns:
+        完整模块名（如 "brain.storage"）或 None
+    """
+    # 精确匹配优先
+    if dep_name in module_names:
+        return dep_name
+
+    # 后缀匹配（按字母序，结果确定）
+    candidates = sorted(name for name in module_names if name.endswith(f".{dep_name}"))
+    return candidates[0] if candidates else None
+
+
+def _import_to_candidate(imp: str) -> str:
+    """将 import 字符串转换为候选模块名。
+
+    Python 点分路径直接返回；文件路径提取 stem 作为短名。
+    """
+    if "/" in imp or "\\" in imp:
+        return Path(imp).stem
+    return imp
+
+
+def _resolve_import(imp: str, module_names: set[str]) -> str | None:
+    """将一条 import 解析为图中的模块名。
+
+    先尝试精确匹配，再尝试后缀匹配（仅模块节点）。
+    外部依赖返回 None。
+    """
+    candidate = _import_to_candidate(imp)
+    # 精确匹配
+    if candidate in module_names:
+        return candidate
+    # 后缀匹配
+    return _resolve_dependency(candidate, module_names)

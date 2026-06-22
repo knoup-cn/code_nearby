@@ -1,4 +1,4 @@
-"""Tests for graph module."""
+"""Tests for graph module — RAG index based."""
 
 from __future__ import annotations
 
@@ -7,198 +7,128 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from brain import graph
+from brain.rag.index import RagIndex
+from brain.rag.schema import Chunk, compute_content_hash
+
+
+def _build_test_index(db_path: Path) -> RagIndex:
+    """创建含测试数据的 RAG 索引。"""
+    index = RagIndex.open(db_path)
+    # 插入 module chunks
+    index.upsert(
+        [
+            _make_chunk("module", "src/module1.py", "module1", "", imports="module2"),
+            _make_chunk("function", "src/module1.py", "func1", "module1.func1"),
+            _make_chunk("module", "src/module2.py", "module2", "", imports="module1"),
+            _make_chunk("function", "src/module2.py", "func2", "module2.func2"),
+            _make_chunk("module", "src/sub/module3.py", "module3", "", imports="module1\nmodule2"),
+            _make_chunk("class", "src/sub/module3.py", "MyClass", "module3.MyClass"),
+            _make_chunk("module", "src/module4.py", "module4", "", imports=""),
+            _make_chunk("function", "src/module4.py", "_private_func", "module4._private_func"),
+        ]
+    )
+    return index
+
+
+def _make_chunk(
+    chunk_type: str,
+    file_path: str,
+    symbol: str,
+    qualified_name: str,
+    *,
+    imports: str = "",
+    signature: str = "",
+    start_line: int = 1,
+    content: str = "pass\n",
+) -> Chunk:
+    """快速构造测试用 Chunk。"""
+    return Chunk(
+        chunk_id=f"{file_path}::{qualified_name or '<module>'}",
+        file_path=file_path,
+        language="python",
+        chunk_type=chunk_type,
+        symbol=symbol,
+        qualified_name=qualified_name,
+        parent_class=None,
+        start_line=start_line,
+        end_line=start_line + 1,
+        imports=tuple(imports.split("\n")) if imports else (),
+        signature=signature,
+        docstring=None,
+        content=content,
+        content_hash=compute_content_hash(content),
+    )
 
 
 def test_generate_graph_basic():
-    """Test basic graph generation."""
+    """测试基本的图生成 — 模块节点、符号节点、边。"""
     with TemporaryDirectory() as tmpdir:
-        kb_path = Path(tmpdir) / "kb"
-        kb_path.mkdir()
+        db_path = Path(tmpdir) / "index.sqlite3"
+        index = _build_test_index(db_path)
 
-        # Create test Markdown files
-        (kb_path / "module1.md").write_text(
-            """---
-brain_schema: "v1"
-type: module
-source_path: src/module1.py
-module: brain.module1
-exports:
-  - func1
-symbols:
-  - name: func1
-    type: function
-    signature: "def func1() -> None:"
-    location_hint: 10
-    is_private: false
-    is_async: false
----
+        g = graph.generate_graph(index, "test_project")
+        index.close()
 
-# module1
-"""
-        )
-
-        (kb_path / "module2.md").write_text(
-            """---
-brain_schema: "v1"
-type: module
-source_path: src/module2.py
-module: brain.module2
-exports:
-  - func2
-dependencies:
-  - "[[module1]]"
-symbols:
-  - name: func2
-    type: function
-    signature: "def func2() -> None:"
-    location_hint: 5
-    is_private: false
-    is_async: false
----
-
-# module2
-"""
-        )
-
-        # Generate graph
-        g = graph.generate_graph(kb_path, "brain")
-
-        # Check basic structure
+        # 结构
         assert g["schema_version"] == "v1"
-        assert g["project"] == "brain"
+        assert g["project"] == "test_project"
         assert "nodes" in g
         assert "edges" in g
         assert "stats" in g
 
-        # Check nodes
-        assert "brain.module1" in g["nodes"]
-        assert "brain.module2" in g["nodes"]
-        assert "brain.module1.func1" in g["nodes"]
-        assert "brain.module2.func2" in g["nodes"]
+        # 模块节点
+        assert "module1" in g["nodes"]
+        assert g["nodes"]["module1"]["type"] == "module"
+        assert g["nodes"]["module1"]["source_path"] == "src/module1.py"
+        assert g["nodes"]["module1"]["exports"] == ["func1"]
 
-        # Check module node structure
-        mod1 = g["nodes"]["brain.module1"]
-        assert mod1["type"] == "module"
-        assert mod1["source_path"] == "src/module1.py"
-        assert mod1["exports"] == ["func1"]
+        assert "sub.module3" in g["nodes"]
+        assert g["nodes"]["sub.module3"]["exports"] == ["MyClass"]
 
-        # Check symbol node structure
-        func1 = g["nodes"]["brain.module1.func1"]
-        assert func1["type"] == "function"
-        assert func1["parent"] == "brain.module1"
-        assert func1["signature"] == "def func1() -> None:"
-        assert func1["location_hint"] == 10
-        assert func1["is_private"] is False
-        assert func1["is_async"] is False
+        # module4 只有私有符号，exports 为空
+        assert g["nodes"]["module4"]["exports"] == []
 
-        # Check edges
-        assert len(g["edges"]) > 0
-        import_edge = [e for e in g["edges"] if e["type"] == "imports"][0]
-        assert import_edge["from"] == "brain.module2"
-        assert import_edge["to"] == "brain.module1"
+        # 符号节点
+        assert "module1.func1" in g["nodes"]
+        assert g["nodes"]["module1.func1"]["type"] == "function"
+        assert g["nodes"]["module1.func1"]["parent"] == "module1"
 
-        # Check stats
-        assert g["stats"]["total_modules"] == 2
-        assert g["stats"]["total_symbols"] == 2
-        assert g["stats"]["total_edges"] >= 1
+        assert "sub.module3.MyClass" in g["nodes"]
+        assert g["nodes"]["sub.module3.MyClass"]["type"] == "class"
+
+        # 私有符号
+        assert g["nodes"]["module4._private_func"]["is_private"] is True
+
+        # 边：module1 → module2, module2 → module1, module3 → module1, module3 → module2
+        assert len(g["edges"]) >= 3
+
+        # 统计
+        assert g["stats"]["total_modules"] == 4
+        assert g["stats"]["total_symbols"] == 4  # func1, func2, MyClass, _private_func
+        assert g["stats"]["total_edges"] >= 3
 
 
-def test_generate_graph_with_classes():
-    """Test graph generation with classes."""
+def test_generate_graph_no_edges_for_empty_imports():
+    """导入为空的模块不产生边。"""
     with TemporaryDirectory() as tmpdir:
-        kb_path = Path(tmpdir) / "kb"
-        kb_path.mkdir()
-
-        (kb_path / "module.md").write_text(
-            """---
-brain_schema: "v1"
-type: module
-source_path: src/module.py
-module: brain.module
-exports:
-  - MyClass
-symbols:
-  - name: MyClass
-    type: class
-    signature: "class MyClass:"
-    location_hint: 5
-    is_private: false
----
-
-# module
-"""
+        db_path = Path(tmpdir) / "index.sqlite3"
+        index = RagIndex.open(db_path)
+        index.upsert(
+            [
+                _make_chunk("module", "src/a.py", "a", "", imports=""),
+                _make_chunk("module", "src/b.py", "b", "", imports=""),
+            ]
         )
 
-        g = graph.generate_graph(kb_path, "brain")
+        g = graph.generate_graph(index, "test")
+        index.close()
 
-        # Check class node
-        assert "brain.module.MyClass" in g["nodes"]
-        cls = g["nodes"]["brain.module.MyClass"]
-        assert cls["type"] == "class"
-        assert cls["parent"] == "brain.module"
-        assert "is_async" not in cls  # Classes don't have is_async
-
-
-def test_parse_frontmatter():
-    """Test frontmatter parsing."""
-    content = """---
-brain_schema: "v1"
-module: test.module
----
-
-# content
-"""
-    fm = graph._parse_frontmatter(content)
-    assert fm is not None
-    assert fm["brain_schema"] == "v1"
-    assert fm["module"] == "test.module"
-
-
-def test_parse_frontmatter_invalid():
-    """Test invalid frontmatter."""
-    # No frontmatter
-    assert graph._parse_frontmatter("# No frontmatter") is None
-
-    # Invalid YAML
-    assert graph._parse_frontmatter("---\ninvalid: [yaml\n---") is None
-
-
-def test_resolve_dependency():
-    """Test dependency resolution."""
-    nodes = {
-        "brain.storage": {"type": "module"},
-        "brain.analyzer": {"type": "module"},
-        "brain.storage.save": {"type": "function"},
-    }
-
-    # Exact match
-    assert graph._resolve_dependency("brain.storage", nodes) == "brain.storage"
-
-    # Suffix match
-    assert graph._resolve_dependency("storage", nodes) == "brain.storage"
-    assert graph._resolve_dependency("analyzer", nodes) == "brain.analyzer"
-
-    # Not found
-    assert graph._resolve_dependency("unknown", nodes) is None
-
-
-def test_resolve_dependency_prefers_module_over_symbol():
-    """A dependency leaf name must resolve to a module, not a symbol sharing the name.
-
-    Regression: ``brain.cli`` defines a command symbol ``context`` (node
-    ``brain.cli.context``) while ``brain.context`` is a real module. A ``[[context]]``
-    import dependency must resolve to the module, not the colliding symbol.
-    """
-    nodes = {
-        "brain.cli": {"type": "module"},
-        "brain.cli.context": {"type": "function"},
-        "brain.context": {"type": "module"},
-    }
-    assert graph._resolve_dependency("context", nodes) == "brain.context"
+        assert len(g["edges"]) == 0
+        assert g["stats"]["total_modules"] == 2
 
 
 def test_save_graph():
-    """Test saving graph to file."""
+    """测试保存图到 _GRAPH.json。"""
     with TemporaryDirectory() as tmpdir:
         kb_path = Path(tmpdir) / "kb"
         kb_path.mkdir()
@@ -215,95 +145,76 @@ def test_save_graph():
         assert graph_file.exists()
         assert graph_file.name == "_GRAPH.json"
 
-        # Verify content
         loaded = json.loads(graph_file.read_text())
         assert loaded["schema_version"] == "v1"
         assert loaded["project"] == "test"
 
 
-def test_generate_graph_skips_index_files():
-    """Test that files starting with _ are skipped."""
-    with TemporaryDirectory() as tmpdir:
-        kb_path = Path(tmpdir) / "kb"
-        kb_path.mkdir()
+def test_resolve_dependency_exact():
+    """精确匹配模块名。"""
+    names = {"brain.storage", "brain.analyzer", "brain.cli"}
+    assert graph._resolve_dependency("brain.storage", names) == "brain.storage"
+    assert graph._resolve_dependency("nonexistent", names) is None
 
-        # Create index file (should be skipped)
-        (kb_path / "_PROJECT.md").write_text(
-            """---
-brain_schema: "v1"
-module: _PROJECT
----
-"""
-        )
 
-        # Create normal file
-        (kb_path / "module.md").write_text(
-            """---
-brain_schema: "v1"
-type: module
-source_path: src/module.py
-module: brain.module
-exports: []
-symbols: []
----
-"""
-        )
+def test_resolve_dependency_suffix():
+    """后缀匹配模块名。"""
+    names = {"brain.storage", "brain.analyzer", "brain.cli"}
+    assert graph._resolve_dependency("storage", names) == "brain.storage"
+    assert graph._resolve_dependency("analyzer", names) == "brain.analyzer"
+    assert graph._resolve_dependency("unknown", names) is None
 
-        g = graph.generate_graph(kb_path, "brain")
 
-        # Only the normal module should be in the graph
-        assert "brain.module" in g["nodes"]
-        assert "_PROJECT" not in g["nodes"]
-        assert g["stats"]["total_modules"] == 1
+def test_resolve_dependency_prefers_module_over_symbol():
+    """依赖叶子名必须解析为模块，而非同名符号。
+
+    Regression: ``brain.cli`` 定义一个名为 ``context`` 的命令符号
+    （节点 ``brain.cli.context``），而 ``brain.context`` 才是真正的
+    模块。``[[context]]`` 导入依赖必须解析为模块。
+    """
+    # _resolve_dependency 只在模块名集合中搜索，所以不会匹配符号
+    names = {"brain.cli", "brain.context"}
+    assert graph._resolve_dependency("context", names) == "brain.context"
+
+
+def test_file_path_to_module():
+    """文件路径 → 模块名转换。"""
+    assert graph._file_path_to_module("src/brain/analyzer.py") == "brain.analyzer"
+    assert graph._file_path_to_module("lib/utils/helpers.go") == "utils.helpers"
+    assert graph._file_path_to_module("app/components/Button.tsx") == "components.Button"
+    assert graph._file_path_to_module("module.py") == "module"
+    assert graph._file_path_to_module("pkg/foo/bar.py") == "foo.bar"
+
+
+def test_import_to_candidate():
+    """import 字符串 → 候选模块名。"""
+    # Python 点分路径
+    assert graph._import_to_candidate("brain.storage") == "brain.storage"
+    # 文件路径 → stem
+    assert graph._import_to_candidate("./local") == "local"
+    assert graph._import_to_candidate("@/utils/helpers") == "helpers"
 
 
 def test_generate_graph_avoids_duplicate_edges():
-    """Test that duplicate edges are not added."""
+    """重复边不会被多次添加。"""
     with TemporaryDirectory() as tmpdir:
-        kb_path = Path(tmpdir) / "kb"
-        kb_path.mkdir()
-
-        # Create two files that both depend on the same module
-        (kb_path / "dep.md").write_text(
-            """---
-brain_schema: "v1"
-module: brain.dep
-exports: []
-symbols: []
----
-"""
+        db_path = Path(tmpdir) / "index.sqlite3"
+        index = RagIndex.open(db_path)
+        # 两个模块都导入同一个 dep 模块
+        index.upsert(
+            [
+                _make_chunk("module", "src/dep.py", "dep", "", imports=""),
+                _make_chunk("module", "src/mod1.py", "mod1", "", imports="dep"),
+                _make_chunk("module", "src/mod2.py", "mod2", "", imports="dep"),
+            ]
         )
 
-        (kb_path / "module1.md").write_text(
-            """---
-brain_schema: "v1"
-module: brain.module1
-dependencies:
-  - "[[dep]]"
-exports: []
-symbols: []
----
-"""
-        )
+        g = graph.generate_graph(index, "test")
+        index.close()
 
-        (kb_path / "module2.md").write_text(
-            """---
-brain_schema: "v1"
-module: brain.module2
-dependencies:
-  - "[[dep]]"
-exports: []
-symbols: []
----
-"""
-        )
+        edges_to_dep = [e for e in g["edges"] if e["to"] == "dep"]
+        assert len(edges_to_dep) == 2  # mod1→dep, mod2→dep
 
-        g = graph.generate_graph(kb_path, "brain")
-
-        # Each module should have only one edge to dep
-        edges_to_dep = [e for e in g["edges"] if e["to"] == "brain.dep"]
-        assert len(edges_to_dep) == 2  # One from module1, one from module2
-
-        # No duplicate edges
+        # 无重复
         edge_tuples = [(e["from"], e["to"], e["type"]) for e in g["edges"]]
         assert len(edge_tuples) == len(set(edge_tuples))

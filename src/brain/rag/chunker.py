@@ -14,7 +14,6 @@ chunk schema 不变（G3）。
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from tree_sitter import Node
@@ -27,11 +26,10 @@ from brain.tree_sitter_utils import (
     get_docstring,
     get_module_docstring,
     get_parser,
-    node_name,
     node_slice,
     node_text,
     relative_path,
-    unwrap_decorated,
+    walk_symbols,
 )
 
 
@@ -64,7 +62,45 @@ def chunk_file(file_path: Path, project_root: Path) -> list[Chunk]:
     if module_c is not None:
         builder.add(module_c)
 
-    _walk_scope(root, scope=[], parent_class=None, builder=builder, cfg=cfg)
+    # 共享 CST 遍历：一次产出所有符号（含递归进入类体的方法）
+    for info in walk_symbols(root, src, cfg):
+        if info.kind in ("function", "method"):
+            qname = ".".join([*info.scope, info.name]) if info.scope else info.name
+            builder.add(
+                builder.make(
+                    chunk_type=info.kind,
+                    symbol=info.name,
+                    qualified_name=qname,
+                    parent_class=info.scope[-1] if info.scope and info.kind == "method" else None,
+                    start_line=info.start_line,
+                    end_line=info.end_line,
+                    signature=extract_signature(
+                        builder.source_lines, info.span_node, info.inner_node, format="compact"
+                    ),
+                    docstring=get_docstring(src, info.inner_node),
+                    content=node_text(src, info.span_node),
+                )
+            )
+        elif info.kind == "class":
+            qname = ".".join([*info.scope, info.name]) if info.scope else info.name
+            preamble_end = _class_preamble_end(info.inner_node, cfg)
+            preamble_text = node_slice(src, info.span_node.start_byte, preamble_end)
+            builder.add(
+                builder.make(
+                    chunk_type="class",
+                    symbol=info.name,
+                    qualified_name=qname,
+                    parent_class=info.scope[-1] if info.scope else None,
+                    start_line=info.start_line,
+                    end_line=info.start_line + preamble_text.count("\n"),
+                    signature=extract_signature(
+                        builder.source_lines, info.span_node, info.inner_node, format="compact"
+                    ),
+                    docstring=get_docstring(src, info.inner_node),
+                    content=preamble_text,
+                )
+            )
+
     return builder.chunks
 
 
@@ -116,85 +152,6 @@ class _ChunkBuilder:
 
     def add(self, chunk: Chunk) -> None:
         self.chunks.append(chunk)
-
-
-# ======================================================================
-# 遍历
-# ======================================================================
-
-
-def _walk_scope(
-    scope_node: Node,
-    scope: list[str],
-    parent_class: str | None,
-    builder: _ChunkBuilder,
-    cfg: LanguageConfig,
-) -> None:
-    """递归遍历 scope_node 内的函数/类符号，产出 chunk。"""
-    is_class = scope_node.type in cfg.class_types
-    body = scope_node.child_by_field_name("body") if is_class else scope_node
-    if body is None:
-        return
-
-    # 构建"需要处理的"节点类型集合：函数 + 类 + 装饰器 + export 等 wrapper
-    func_types = {cfg.func_type}
-    if cfg.method_func_types:
-        func_types.update(cfg.method_func_types)
-    symbol_types = func_types | set(cfg.class_types) | set(cfg.wrapper_types)
-    if cfg.decorated_type:
-        symbol_types.add(cfg.decorated_type)
-
-    for child in body.named_children:
-        if child.type not in symbol_types:
-            continue
-        span_node, inner = unwrap_decorated(child, cfg)
-        if inner is None:
-            continue
-        name = node_name(inner, builder.src)
-        if not name:
-            continue
-        qualified_name = ".".join([*scope, name])
-
-        if inner.type in func_types:
-            chunk_type = "method" if parent_class else "function"
-            builder.add(
-                builder.make(
-                    chunk_type=chunk_type,
-                    symbol=name,
-                    qualified_name=qualified_name,
-                    parent_class=parent_class,
-                    start_line=span_node.start_point[0] + 1,
-                    end_line=span_node.end_point[0] + 1,
-                    signature=extract_signature(
-                        builder.source_lines, span_node, inner, format="compact"
-                    ),
-                    docstring=get_docstring(builder.src, inner),
-                    content=node_text(builder.src, span_node),
-                )
-            )
-            # 嵌套函数保留在父函数 chunk 内，不递归
-        elif inner.type in cfg.class_types:
-            preamble_end = _class_preamble_end(inner, cfg)
-            start_line = span_node.start_point[0] + 1
-            content = node_slice(builder.src, span_node.start_byte, preamble_end)
-            # end_line 限定在 preamble 范围内（方法拆分到独立 chunk）
-            end_line = start_line + content.count("\n")
-            builder.add(
-                builder.make(
-                    chunk_type="class",
-                    symbol=name,
-                    qualified_name=qualified_name,
-                    parent_class=parent_class,
-                    start_line=start_line,
-                    end_line=end_line,
-                    signature=extract_signature(
-                        builder.source_lines, span_node, inner, format="compact"
-                    ),
-                    docstring=get_docstring(builder.src, inner),
-                    content=content,
-                )
-            )
-            _walk_scope(inner, scope=[*scope, name], parent_class=name, builder=builder, cfg=cfg)
 
 
 def _module_chunk(

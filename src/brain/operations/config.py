@@ -1,4 +1,5 @@
 """知识库配置管理。"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -11,9 +12,7 @@ def needs_overwrite(path: Path) -> bool:
     return path.exists() and any(path.iterdir())
 
 
-def init_config(
-    git_repo: str | None, kb_path: Path, overwrite: bool = False
-) -> tuple[bool, str]:
+def init_config(git_repo: str | None, kb_path: Path, overwrite: bool = False) -> tuple[bool, str]:
     """初始化知识库配置。
 
     Args:

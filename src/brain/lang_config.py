@@ -1,7 +1,7 @@
 """支持语言的 tree-sitter 配置注册表。
 
 纯数据模块——不包含 tree-sitter 逻辑。所有 tree-sitter 消费者
-（analyzer、chunker、tree_sitter_utils）都从这里读取语言定义。
+（chunker、tree_sitter_utils、graph）都从这里读取语言定义。
 """
 
 from __future__ import annotations

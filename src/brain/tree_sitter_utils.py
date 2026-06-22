@@ -1,7 +1,7 @@
 """共享 tree-sitter 工具函数。
 
-从 chunker.py 提取，供 analyzer.py 和 chunker.py 共同使用。
-所有与解析器、CST 遍历、文本提取相关的通用逻辑集中在此。
+所有与解析器、CST 遍历、文本提取相关的通用逻辑集中在此，
+供 chunker.py 和 graph.py 共同使用。
 """
 
 from __future__ import annotations
@@ -9,6 +9,8 @@ from __future__ import annotations
 import importlib
 import re
 import textwrap
+from collections.abc import Iterator
+from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
@@ -18,6 +20,105 @@ from brain.lang_config import (  # 内部使用
     LanguageConfig,  # noqa: F401  类型标注用
     get_config,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class SymbolInfo:
+    """tree-sitter 遍历产出的单个代码符号（函数/方法/类）。
+
+    保留 ``span_node`` 和 ``inner_node`` 让消费者自行按需提取数据
+    （args、return_type、bases、content），避免此结构成为大杂烩。
+    Node 内存安全——rooted in tree-sitter Tree，调用者保活。
+    """
+
+    name: str
+    kind: str  # "function" | "method" | "class"
+    scope: tuple[str, ...]  # 父级 scope 路径，如 ("ClassName",)
+    span_node: Node  # 含装饰器的完整 span 节点
+    inner_node: Node  # 实际 def/class 声明节点
+    start_line: int  # 1-indexed，含装饰器
+    end_line: int  # 1-indexed
+    is_private: bool
+    is_async: bool
+
+
+def walk_symbols(
+    scope_node: Node,
+    src: bytes,
+    cfg: LanguageConfig,
+    scope: tuple[str, ...] = (),
+    parent_class: str | None = None,
+) -> Iterator[SymbolInfo]:
+    """递归遍历 CST scope 节点，产出每个函数/方法/类的 :class:`SymbolInfo`。
+
+    这是 chunker 和 graph 的**共享 CST 遍历**。
+    调用者通过 ``SymbolInfo`` 的 ``span_node`` / ``inner_node`` 字段
+    按需调用 ``extract_parameters``、``extract_signature``、
+    ``get_docstring`` 等 helper 提取各自所需数据。
+
+    Args:
+        scope_node: 起始 scope 的 CST 节点（通常为 root_node 或类 body）
+        src: 源文件字节
+        cfg: 语言配置
+        scope: 当前 scope 路径（递归参数，调用者不传）
+        parent_class: 当前所属类名（递归参数，调用者不传）
+    """
+    is_class_body = scope_node.type in cfg.class_types
+    body = scope_node.child_by_field_name("body") if is_class_body else scope_node
+    if body is None:
+        return
+
+    func_types = {cfg.func_type}
+    if cfg.method_func_types:
+        func_types.update(cfg.method_func_types)
+    symbol_types = func_types | set(cfg.class_types) | set(cfg.wrapper_types)
+    if cfg.decorated_type:
+        symbol_types.add(cfg.decorated_type)
+
+    for child in body.named_children:
+        if child.type not in symbol_types:
+            continue
+        span_node, inner = unwrap_decorated(child, cfg)
+        if inner is None:
+            continue
+        name = node_name(inner, src)
+        if not name:
+            continue
+
+        if inner.type in func_types:
+            kind = "method" if parent_class else "function"
+            yield SymbolInfo(
+                name=name,
+                kind=kind,
+                scope=scope,
+                span_node=span_node,
+                inner_node=inner,
+                start_line=span_node.start_point[0] + 1,
+                end_line=span_node.end_point[0] + 1,
+                is_private=cfg.is_private_symbol(name),
+                is_async=is_async_def(inner) if cfg.has_async_keyword else False,
+            )
+        elif inner.type in cfg.class_types:
+            yield SymbolInfo(
+                name=name,
+                kind="class",
+                scope=scope,
+                span_node=span_node,
+                inner_node=inner,
+                start_line=span_node.start_point[0] + 1,
+                end_line=span_node.end_point[0] + 1,
+                is_private=cfg.is_private_symbol(name),
+                is_async=False,
+            )
+            # 递归进入类体
+            yield from walk_symbols(
+                inner,
+                src,
+                cfg,
+                scope=(*scope, name),
+                parent_class=name,
+            )
+
 
 # ======================================================================
 # 解析器工厂
@@ -150,17 +251,30 @@ def get_module_docstring(src: bytes, root: Node) -> str | None:
     return first_string(src, root)
 
 
+# 框架 pragma 指令（非 docstring，应跳过）
+_PRAGMA_DIRECTIVES = frozenset({"use client", "use server", "use strict"})
+
+
+def _is_framework_pragma(text: str) -> bool:
+    """检查字符串是否为框架 pragma 指令（如 'use client'、'use strict'）。"""
+    return text.strip().lower() in _PRAGMA_DIRECTIVES
+
+
 def first_string(src: bytes, block: Node) -> str | None:
     """提取代码块第一条语句中的字符串字面量（Python docstring 模式）。
 
-    docstring 必须是 block 的第一个语句。
+    跳过框架 pragma 指令（'use client'、'use server'、'use strict'），
+    这些是指令而非文档。docstring 必须是第一个非 pragma 语句。
     """
     for child in block.named_children:
         if child.type == "expression_statement" and child.named_child_count:
             inner = child.named_children[0]
             if inner.type == "string":
-                return clean_string(src, inner)
-        break  # docstring 必须是第一条语句
+                text = clean_string(src, inner)
+                if _is_framework_pragma(text):
+                    continue  # 跳过 pragma，检查下一个语句
+                return text
+        break  # 第一个非字符串语句意味着没有 docstring
     return None
 
 
@@ -203,7 +317,7 @@ def _collect_python_imports(src: bytes, root: Node) -> tuple[str, ...]:
     for child in root.named_children:
         if child.type == "import_statement":
             for n in child.named_children:
-                dotted = _dotted_name(src, n)
+                dotted = dotted_name(src, n)
                 if dotted:
                     names.append(dotted)
         elif child.type == "import_from_statement":
@@ -217,7 +331,7 @@ def _collect_python_imports(src: bytes, root: Node) -> tuple[str, ...]:
     return tuple(n for n in names if not (n in seen or seen.add(n)))
 
 
-def _dotted_name(src: bytes, node: Node) -> str:
+def dotted_name(src: bytes, node: Node) -> str:
     """从 import 节点提取点分名称。"""
     if node.type == "dotted_name":
         return node_text(src, node)
@@ -255,23 +369,31 @@ def extract_signature(
         return _extract_signature_multiline(source_lines, span_node, inner_node)
 
 
-def _extract_signature_compact(
-    source_lines: list[str], span_node: Node, inner_node: Node
-) -> str:
-    """提取签名并压缩为单行（chunker 风格）。"""
-    # 从装饰器开始，提取到第一个 ":" 结尾的行
-    start_line = span_node.start_point[0]
-    end_line = inner_node.end_point[0]
+def _extract_signature_compact(source_lines: list[str], span_node: Node, inner_node: Node) -> str:
+    """提取签名并压缩为单行（chunker 风格）。
 
-    # 提取相关行，到第一个以 ":" 结尾的行为止
+    使用 body 子节点确定签名结束位置，适配所有语言：
+    - Python：签名以 ':' 结尾，body 从下一行开始
+    - TS/JS/Go/Rust：签名以 '{' 结尾，body 可能同行或下一行
+    """
+    start_line = span_node.start_point[0]
+
+    # 使用 body 子节点确定签名结束位置
+    body = inner_node.child_by_field_name("body")
+    if body is not None:
+        # 签名结束于 body 开始位置（exclusive upper bound）
+        sig_end = body.start_point[0]
+        # 确保至少捕获一行（TS/JS body 可能与声明同行）
+        sig_end = max(sig_end, start_line + 1)
+    else:
+        # 无 body（抽象方法、接口声明等）：使用整个节点
+        sig_end = inner_node.end_point[0] + 1
+
+    # 提取签名行
     signature_lines = []
-    for i in range(start_line, end_line + 1):
-        if i < len(source_lines):
-            line = source_lines[i].strip()
-            signature_lines.append(line)
-            # 遇到第一个以 ":" 结尾的行即停止（这是函数/类声明的结束）
-            if line.endswith(":"):
-                break
+    for i in range(start_line, min(sig_end, len(source_lines))):
+        line = source_lines[i].strip()
+        signature_lines.append(line)
 
     # 合并为单行，压缩空白
     header = " ".join(signature_lines)
@@ -280,21 +402,23 @@ def _extract_signature_compact(
     return header if header else ""
 
 
-def _extract_signature_multiline(
-    source_lines: list[str], span_node: Node, inner_node: Node
-) -> str:
-    """提取签名并保留多行格式（analyzer 风格）。"""
-    start_line = span_node.start_point[0] + 1  # 1-indexed
-    end_line = inner_node.end_point[0] + 1
+def _extract_signature_multiline(source_lines: list[str], span_node: Node, inner_node: Node) -> str:
+    """提取签名并保留多行格式。
 
-    # 提取 def/class 行（可能跨多行）
+    使用 body 子节点确定签名结束位置（同 compact 变体逻辑）。
+    """
+    start_line = span_node.start_point[0]
+
+    body = inner_node.child_by_field_name("body")
+    if body is not None:
+        sig_end = body.start_point[0]
+        sig_end = max(sig_end, start_line + 1)
+    else:
+        sig_end = inner_node.end_point[0] + 1
+
     signature_lines = []
-    for i in range(start_line - 1, min(end_line, len(source_lines))):
+    for i in range(start_line, min(sig_end, len(source_lines))):
         line = source_lines[i].strip()
         signature_lines.append(line)
-        # 遇到第一个以 ":" 结尾的行即停止
-        if line.endswith(":"):
-            break
 
     return " ".join(signature_lines)
-

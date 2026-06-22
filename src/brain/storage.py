@@ -80,25 +80,3 @@ def save_project_metadata(kb_path: Path, project_path: Path, updates: dict) -> N
 
     data["projects"][project_key].update(updates)
     metadata_file.write_text(json.dumps(data, indent=2))
-
-
-def remove_file_from_kb(kb_path: Path, project_path: Path, file_path: Path) -> None:
-    """Remove an analyzed file's markdown from the knowledge base.
-
-    Mirrors :func:`brain.analyzer.analyze_file`'s path mapping: a source file at
-    ``{project}/<rel>.py`` is stored at ``{kb}/<rel>.md``, so deletion targets
-    the same relative path. Non-Python files never produced markdown, so they
-    are ignored.
-
-    Args:
-        kb_path: Project's knowledge base path (org/project/)
-        project_path: Source project path
-        file_path: Deleted source file (absolute path under project_path)
-    """
-    if file_path.suffix != ".py":
-        return
-    try:
-        relative_path = file_path.relative_to(project_path)
-    except ValueError:
-        return
-    (kb_path / relative_path.with_suffix(".md")).unlink(missing_ok=True)
