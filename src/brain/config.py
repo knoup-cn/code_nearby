@@ -7,10 +7,10 @@ from pathlib import Path
 
 
 def get_config_path() -> Path:
-    """获取配置文件路径。"""
-    config_dir = Path.home() / ".config" / "brain"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    return config_dir / "config.json"
+    """获取配置文件路径 (``~/.brain/config``)。"""
+    brain_dir = Path.home() / ".brain"
+    brain_dir.mkdir(parents=True, exist_ok=True)
+    return brain_dir / "config"
 
 
 def load_config() -> dict:
@@ -35,7 +35,7 @@ def save_config(config: dict) -> None:
 def get_kb_path() -> Path:
     """获取知识库本地路径，不存在则自动创建。
 
-    默认路径为 ``~/.brain``，可通过 config.json 中的
+    默认路径为 ``~/.brain``，可通过 ``~/.brain/config`` 中的
     ``local_path`` 键自定义。
     """
     cfg = load_config()
