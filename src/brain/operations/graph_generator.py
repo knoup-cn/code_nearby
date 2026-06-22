@@ -1,6 +1,6 @@
 """依赖图生成。
 
-仅保留 ``_GRAPH.json`` 生成。_PROJECT.md / _MODULES.md 索引文件已移除。
+生成 ``_GRAPH.json`` 文件，包含模块和符号之间的节点-边关系图。
 """
 
 from __future__ import annotations

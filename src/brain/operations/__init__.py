@@ -12,5 +12,5 @@ Git 同步：
     from brain.operations.sync import sync_knowledge_base
 
 依赖图：
-    from brain.operations.obsidian_indexes import generate_project_graph
+    from brain.operations.graph_generator import generate_project_graph
 """

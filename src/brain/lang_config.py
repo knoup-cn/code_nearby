@@ -39,8 +39,6 @@ class LanguageConfig:
     has_async_keyword: bool  # 语言是否支持 async 关键字
 
     # ---- 元数据 ----
-    tag_name: str  # Obsidian tag，如 "python"
-    module_type_label: str  # frontmatter type，如 "python-module"
     comment_prefix: str  # "#" 或 "//"
 
     # ---- import 节点类型 ----
@@ -63,8 +61,6 @@ PYTHON = LanguageConfig(
     wrapper_types=("decorated_definition",),
     is_private_symbol=lambda name: name.startswith("_"),
     has_async_keyword=True,
-    tag_name="python",
-    module_type_label="python-module",
     comment_prefix="#",
     import_node_types=("import_statement", "import_from_statement"),
 )
@@ -81,8 +77,6 @@ JAVASCRIPT = LanguageConfig(
     wrapper_types=("export_statement",),
     is_private_symbol=lambda name: name.startswith("_"),
     has_async_keyword=True,
-    tag_name="javascript",
-    module_type_label="javascript-module",
     comment_prefix="//",
     import_node_types=("import_statement",),
 )
@@ -99,8 +93,6 @@ TYPESCRIPT = LanguageConfig(
     wrapper_types=("export_statement",),
     is_private_symbol=lambda name: name.startswith("_"),
     has_async_keyword=True,
-    tag_name="typescript",
-    module_type_label="typescript-module",
     comment_prefix="//",
     import_node_types=("import_statement",),
 )
@@ -117,8 +109,6 @@ GO = LanguageConfig(
     wrapper_types=(),
     is_private_symbol=lambda name: len(name) > 0 and name[0].islower(),
     has_async_keyword=False,
-    tag_name="go",
-    module_type_label="go-module",
     comment_prefix="//",
     import_node_types=("import_declaration",),
 )
@@ -135,8 +125,6 @@ RUST = LanguageConfig(
     wrapper_types=(),
     is_private_symbol=lambda name: not (len(name) > 0 and name[0].isupper()),
     has_async_keyword=True,
-    tag_name="rust",
-    module_type_label="rust-module",
     comment_prefix="//",
     import_node_types=("use_declaration",),
 )
@@ -157,8 +145,6 @@ JAVA = LanguageConfig(
     wrapper_types=(),
     is_private_symbol=lambda name: False,  # Java 用修饰符而非命名约定
     has_async_keyword=False,
-    tag_name="java",
-    module_type_label="java-module",
     comment_prefix="//",
     import_node_types=("import_declaration",),
 )
