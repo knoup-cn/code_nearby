@@ -341,16 +341,18 @@ def test_infer_tags():
     """Test tag inference."""
     from pathlib import Path
 
+    from brain.markdown_renderer import _infer_tags
+
     # 测试文件路径
     path = Path("tests/test_module.py")
     symbols: dict = {"functions": [], "classes": []}
-    tags = analyzer._infer_tags(path, symbols, "python")
+    tags = _infer_tags(path, symbols, "python")
     assert "python" in tags
     assert "test" in tags
 
     # 核心模块
     path = Path("src/brain/operations.py")
-    tags = analyzer._infer_tags(path, symbols, "python")
+    tags = _infer_tags(path, symbols, "python")
     assert "python" in tags
     assert "core" in tags
 
@@ -360,7 +362,7 @@ def test_infer_tags():
         "functions": [{"name": "async_func", "is_async": True}],
         "classes": [],
     }
-    tags = analyzer._infer_tags(path, symbols, "python")
+    tags = _infer_tags(path, symbols, "python")
     assert "async" in tags
 
 
@@ -500,15 +502,17 @@ pub fn compute_sum(values: &[i32]) -> i32 {
 
 def test_multi_language_tags():
     """验证不同语言产生各自的标签。"""
+    from brain.markdown_renderer import _infer_tags
+
     path = Path("src/module.py")
     symbols: dict = {"functions": [], "classes": []}
 
-    assert "python" in analyzer._infer_tags(path, symbols, "python")
-    assert "go" in analyzer._infer_tags(path, symbols, "go")
-    assert "javascript" in analyzer._infer_tags(path, symbols, "javascript")
-    assert "typescript" in analyzer._infer_tags(path, symbols, "typescript")
-    assert "rust" in analyzer._infer_tags(path, symbols, "rust")
-    assert "java" in analyzer._infer_tags(path, symbols, "java")
+    assert "python" in _infer_tags(path, symbols, "python")
+    assert "go" in _infer_tags(path, symbols, "go")
+    assert "javascript" in _infer_tags(path, symbols, "javascript")
+    assert "typescript" in _infer_tags(path, symbols, "typescript")
+    assert "rust" in _infer_tags(path, symbols, "rust")
+    assert "java" in _infer_tags(path, symbols, "java")
 
 
 def test_analyze_java_file():
