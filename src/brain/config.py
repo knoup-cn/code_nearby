@@ -35,7 +35,7 @@ def save_config(config: dict) -> None:
 def get_kb_path() -> Path:
     """获取知识库本地路径，不存在则自动创建。
 
-    默认路径为 ``~/brain-vault``，可通过 config.json 中的
+    默认路径为 ``~/.brain``，可通过 config.json 中的
     ``local_path`` 键自定义。
     """
     cfg = load_config()
@@ -45,4 +45,4 @@ def get_kb_path() -> Path:
 
 
 def _default_config() -> dict:
-    return {"local_path": str(Path.home() / "brain-vault")}
+    return {"local_path": str(Path.home() / ".brain")}

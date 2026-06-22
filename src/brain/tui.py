@@ -176,7 +176,7 @@ class BrainApp(App):
             self._handle_change_path()
         elif btn_id == "reset":
             self.push_screen(
-                ConfirmDialog("⚠️ Reset KB path to default (~/brain-vault)?"),
+                ConfirmDialog("⚠️ Reset KB path to default (~/.brain)?"),
                 self._handle_reset,
             )
 
@@ -218,7 +218,7 @@ class _PathInputDialog(ModalScreen):
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Static("Enter new knowledge base path:")
-            yield Input(placeholder=str(Path.home() / "brain-vault"), id="kb_path_input")
+            yield Input(placeholder=str(Path.home() / ".brain"), id="kb_path_input")
             yield Button("✓ Save", id="save", variant="primary")
             yield Button("✗ Cancel", id="cancel")
 
