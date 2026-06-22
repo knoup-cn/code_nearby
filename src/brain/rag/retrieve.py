@@ -39,6 +39,8 @@ def search(
     recall: int | None = None,
     expand_synonyms: bool = False,
     enable_rerank: bool = False,
+    custom_synonyms: dict[str, list[str]] | None = None,
+    enable_embed: bool = False,
 ) -> list[ScoredChunk]:
     """Return the top-``k`` chunks for a query, fused across channels.
 
@@ -46,8 +48,11 @@ def search(
     the dependency-proximity boost (C3 structural signal) when provided.
 
     ``expand_synonyms`` expands the query with code-domain synonyms before
-    retrieval (zero-cost, no embedding). ``enable_rerank`` applies heuristic
-    score adjustments after fusion.
+    retrieval. ``custom_synonyms`` provides user-defined term→synonyms mapping
+    (takes priority over built-in clusters). ``enable_embed`` enables the
+    embed-model fallback layer (opt-in, requires ``fastembed>=0.4``).
+
+    ``enable_rerank`` applies heuristic score adjustments after fusion.
     """
     recall = recall or max(k * 4, 20)
 
@@ -56,7 +61,11 @@ def search(
     if expand_synonyms:
         from brain.rag.synonyms import expand_query
 
-        search_query = expand_query(query)
+        search_query = expand_query(
+            query,
+            custom_synonyms=custom_synonyms,
+            enable_embed=enable_embed,
+        )
 
     bm25_ids = index.query_bm25(search_query, recall, language, path_glob)
     symbol_ids = index.query_symbol(search_query, recall, language, path_glob)

@@ -8,6 +8,13 @@ This subpackage implements brain's "context engine" (Goal 2 in
 
 Embeddings / dense retrieval are intentionally deferred to an opt-in 进阶 layer
 (see the capability matrix); nothing here downloads a model or runs a vector DB.
+
+Synonym expansion supports three-layer fallback: custom dict → built-in clusters
+→ embed model (opt-in, ``fastembed>=0.4``).
 """
 
 from __future__ import annotations
+
+from brain.rag.synonyms import expand_query, is_embed_available, load_custom_synonyms
+
+__all__ = ["expand_query", "is_embed_available", "load_custom_synonyms"]

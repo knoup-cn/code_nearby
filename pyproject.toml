@@ -39,6 +39,9 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.11",
 ]
+embed = [
+  "fastembed>=0.4",
+]
 
 [project.scripts]
 brain = "brain.cli:main"
