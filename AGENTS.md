@@ -39,19 +39,6 @@ Prefer:
 
 ---
 
-# TUI Constraints
-
-When modifying `src/code_nearby/tui.py`:
-
-- **MUST** check Textual official examples first: https://github.com/Textualize/textual/tree/main/examples
-- **MUST** follow Textual's standard patterns (e.g., `ScrollableContainer` for scrolling, not manual `overflow`)
-- **MUST** add keyboard bindings for modal dialogs (e.g., Escape to dismiss)
-- **MUST** test focus behavior (input widgets should allow losing focus via Escape)
-- prefer built-in widgets over custom implementations
-- keep CSS simple and leverage Textual's design system
-
----
-
 # Forbidden Actions
 
 Do not introduce:

@@ -1,4 +1,4 @@
-"""End-to-end tests: assembly + CLI index/search (Phase 4: C6/C7/C8)."""
+"""End-to-end tests: index + search via programmatic API."""
 
 from __future__ import annotations
 
@@ -7,17 +7,15 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from typer.testing import CliRunner
 
 import code_nearby
-from code_nearby import cli, config
+from code_nearby import config, storage
 from code_nearby.rag.assemble import assemble, chunk_tokens
 from code_nearby.rag.chunker import chunk_file
 from code_nearby.rag.index import RagIndex
 from code_nearby.rag.retrieve import ScoredChunk, search
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "sample_pkg"
-runner = CliRunner()
 
 
 # --- assembly --------------------------------------------------------------
@@ -130,16 +128,16 @@ def wired_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     kb = tmp_path / "kb"
     kb.mkdir()
     monkeypatch.setattr(config, "load_config", lambda: {"local_path": str(kb)})
-    # cli.operations and code_nearby.storage both read config via the same module
+    # analysis and storage both read config via the same module
     monkeypatch.chdir(repo)
     return repo
 
 
 def test_analyze_then_search(wired_project: Path) -> None:
     """analyze then search via programmatic API."""
-    result = runner.invoke(cli.app, ["analyze", "."])
-    assert result.exit_code == 0, result.output
-    assert "Analyzed" in result.output
+    result = code_nearby.analyze(wired_project)
+    assert result["success"], result.get("error")
+    assert result["files_analyzed"] > 0
 
     payload = code_nearby.search("verify token", project_path=wired_project)
     assert payload["results"][0]["qualified_name"] == "verify_token"
@@ -158,7 +156,7 @@ def test_search_without_index_errors(wired_project: Path) -> None:
 
 def test_search_human_readable(wired_project: Path) -> None:
     """search returns structured results with correct refs."""
-    runner.invoke(cli.app, ["analyze", "."])
+    code_nearby.analyze(wired_project)
     payload = code_nearby.search("verify_token", project_path=wired_project)
     assert payload["results"][0]["ref"] == "pkg/auth.py:4"
     assert payload["results"][0]["qualified_name"] == "verify_token"

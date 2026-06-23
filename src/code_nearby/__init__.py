@@ -1,9 +1,7 @@
-"""Code Nearby — 代码分析与本地 RAG context engine。
+"""Code Nearby — MCP server for codebase context.
 
-提供两个核心函数：
-
-- :func:`analyze` — 分析源码仓库，产出 RAG 检索索引 + 依赖图
-- :func:`search` — 检索 RAG 索引，返回结构化代码片段
+Primary interface is MCP (``nearby-mcp``). The ``analyze`` and ``search``
+functions below are the programmatic API for library usage and testing.
 
 Usage::
 
@@ -24,8 +22,6 @@ __version__ = "0.1.0"
 def analyze(project_path: str | Path = ".", *, full: bool = False) -> dict[str, Any]:
     """分析源码仓库，产出 RAG 索引 + 依赖图。
 
-    这是程序化入口，等价于 CLI 的 ``nearby analyze .``。
-
     Args:
         project_path: 源项目路径，默认当前目录。
         full: 是否强制全量重建（默认增量）。
@@ -40,9 +36,6 @@ def analyze(project_path: str | Path = ".", *, full: bool = False) -> dict[str, 
             "kb_path": str | None,
             "error": str | None,
         }
-
-    Raises:
-        FileNotFoundError: project_path 不存在。
     """
     from code_nearby.operations.analysis import run_full_analysis
 
@@ -62,31 +55,16 @@ def search(
     budget: int | None = None,
     window_strategy: str = "moderate",
 ) -> dict[str, Any]:
-    """检索 RAG 索引，返回 token 预算感知的结构化代码片段。
+    """检索 RAG 索引，返回结构化代码片段。
 
     Args:
         query: 自然语言或标识符查询。
         project_path: 项目路径，默认当前目录。
         max_results: 最大返回结果数。
-        language: 按语言过滤（如 ``"python"``）。
-        path_glob: 按文件路径 glob 过滤（如 ``"src/**/*.py"``）。
-        budget: token 预算上限（None = 不限制）。
-
-    Returns:
-        {
-            "query": str,
-            "truncated": bool,
-            "token_estimate": int,
-            "results": [
-                {
-                    "rank": int, "score": float,
-                    "file": str, "lines": str, "ref": str,
-                    "language": str, "type": str,
-                    "qualified_name": str, "signature": str,
-                    "content": str,
-                }, ...
-            ],
-        }
+        language: 按语言过滤。
+        path_glob: 按文件路径 glob 过滤。
+        budget: token 预算上限。
+        window_strategy: 上下文窗口策略。
 
     Raises:
         RuntimeError: 搜索索引未初始化。
@@ -103,7 +81,7 @@ def search(
     if index_file is None or not index_file.exists():
         raise RuntimeError(
             f"No search index for project: {target.name}. "
-            "Run code_nearby.analyze() or 'nearby analyze' first."
+            "Run code_nearby.analyze() or connect the MCP server first."
         )
 
     idx = RagIndex.open(index_file)

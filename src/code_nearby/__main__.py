@@ -1,15 +1,6 @@
 from __future__ import annotations
 
-import sys
-
-from .cli import app
-from .tui import run as run_tui
+from .mcp_server import run
 
 if __name__ == "__main__":
-    if len(sys.argv) == 1:
-        run_tui()
-    elif len(sys.argv) == 2 and sys.argv[1] == ".":
-        sys.argv = ["nearby", "analyze", "."]
-        app()
-    else:
-        app()
+    run()
