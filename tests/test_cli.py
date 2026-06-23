@@ -20,7 +20,6 @@ def test_status_shows_kb_path(tmp_path, monkeypatch):
         return vault_path
 
     monkeypatch.setattr("code_nearby.cli.config.get_kb_path", mock_get_kb_path)
-    monkeypatch.setattr("code_nearby.tui.config.get_kb_path", mock_get_kb_path)
 
     result = runner.invoke(app, ["status"])
 
@@ -29,22 +28,8 @@ def test_status_shows_kb_path(tmp_path, monkeypatch):
     assert str(vault_path) in result.stdout
 
 
-def test_clear_config(tmp_path, monkeypatch):
-    """Test clearing configuration."""
-    config_file = tmp_path / "config.json"
-    monkeypatch.setattr("code_nearby.config.get_config_path", lambda: config_file)
-    # Write a config so clear has something to delete
-    config_file.write_text('{"local_path": "/custom/path"}')
-
-    result = runner.invoke(app, ["clear"], input="y\n")
-
-    assert result.exit_code == 0
-    assert "Configuration cleared" in result.stdout
-    assert not config_file.exists()
-
-
 def test_analyze_runs_on_source_directory(tmp_path, monkeypatch):
-    """Test analyze runs on a source directory (git not required)."""
+    """Test analyze runs on a source directory."""
     project = tmp_path / "project"
     project.mkdir()
     kb_path = tmp_path / "kb"
@@ -72,3 +57,10 @@ def test_analyze_runs_on_source_directory(tmp_path, monkeypatch):
     assert result.exit_code == 0
     assert "Analyzed 3 files" in result.stdout
     assert "10 RAG chunks indexed" in result.stdout
+
+
+def test_default_shows_help():
+    """Test default (no subcommand) shows guidance."""
+    result = runner.invoke(app)
+    assert result.exit_code == 0
+    assert "MCP server" in result.stdout

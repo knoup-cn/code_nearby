@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+import code_nearby
 from code_nearby import cli, config
 from code_nearby.rag.assemble import assemble, chunk_tokens
 from code_nearby.rag.chunker import chunk_file
@@ -134,29 +135,30 @@ def wired_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return repo
 
 
-def test_cli_analyze_then_search_json(wired_project: Path) -> None:
+def test_analyze_then_search(wired_project: Path) -> None:
+    """analyze then search via programmatic API."""
     result = runner.invoke(cli.app, ["analyze", "."])
     assert result.exit_code == 0, result.output
     assert "Analyzed" in result.output
 
-    result = runner.invoke(cli.app, ["search", "verify token", "--json"])
-    assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = code_nearby.search("verify token", project_path=wired_project)
     assert payload["results"][0]["qualified_name"] == "verify_token"
-    # ref 指向原始 chunk 起始行
     assert payload["results"][0]["ref"].startswith("pkg/auth.py:")
     assert "def verify_token" in payload["results"][0]["content"]
 
 
-def test_cli_search_without_index_errors(wired_project: Path) -> None:
-    result = runner.invoke(cli.app, ["search", "anything"])
-    assert result.exit_code == 1
-    assert "No search index" in result.output
+def test_search_without_index_errors(wired_project: Path) -> None:
+    """search without index raises RuntimeError."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        with pytest.raises(RuntimeError, match="No search index"):
+            code_nearby.search("anything", project_path=td)
 
 
-def test_cli_search_human_output(wired_project: Path) -> None:
+def test_search_human_readable(wired_project: Path) -> None:
+    """search returns structured results with correct refs."""
     runner.invoke(cli.app, ["analyze", "."])
-    result = runner.invoke(cli.app, ["search", "verify_token"])
-    assert result.exit_code == 0
-    assert "pkg/auth.py:4" in result.output
-    assert "verify_token" in result.output
+    payload = code_nearby.search("verify_token", project_path=wired_project)
+    assert payload["results"][0]["ref"] == "pkg/auth.py:4"
+    assert payload["results"][0]["qualified_name"] == "verify_token"
