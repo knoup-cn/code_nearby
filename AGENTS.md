@@ -41,7 +41,7 @@ Prefer:
 
 # TUI Constraints
 
-When modifying `src/brain/tui.py`:
+When modifying `src/code_nearby/tui.py`:
 
 - **MUST** check Textual official examples first: https://github.com/Textualize/textual/tree/main/examples
 - **MUST** follow Textual's standard patterns (e.g., `ScrollableContainer` for scrolling, not manual `overflow`)
@@ -137,7 +137,7 @@ Approval required for:
 - optimize for local reasoning
 
 Project structure:
-- `src/brain/` — core implementation
+- `src/code_nearby/` — core implementation
 - `tests/` — test suite
 - `pyproject.toml` — dependencies and configuration
 - `README.md` — user documentation
@@ -202,7 +202,7 @@ Update when:
 
 Test organization:
 - `tests/test_*.py` — unit and integration tests
-- match `src/brain/` structure
+- match `src/code_nearby/` structure
 
 ---
 

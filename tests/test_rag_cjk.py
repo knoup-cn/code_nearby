@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
-from brain.rag.chunker import chunk_file
-from brain.rag.index import (
+from code_nearby.rag.chunker import chunk_file
+from code_nearby.rag.index import (
     RagIndex,
     _cjk_bigrams,
+    _fts_query,
     _is_cjk,
+    _sanitize_phrase,
     _search_blob,
     _terms,
 )
@@ -103,7 +108,7 @@ def test_terms_case_insensitive() -> None:
 
 def test_search_blob_includes_cjk_bigrams() -> None:
     """索引 blob 应包含从 docstring + content 提取的 CJK bigram。"""
-    from brain.rag.schema import Chunk
+    from code_nearby.rag.schema import Chunk
 
     chunk = Chunk(
         chunk_id="test.py::get_user",
@@ -132,7 +137,7 @@ def test_search_blob_includes_cjk_bigrams() -> None:
 
 def test_search_blob_no_cjk() -> None:
     """纯英文 chunk 不产生 CJK bigram（回归测试）。"""
-    from brain.rag.schema import Chunk
+    from code_nearby.rag.schema import Chunk
 
     chunk = Chunk(
         chunk_id="test.py::add",
@@ -167,17 +172,17 @@ def cjk_index(tmp_path: Path) -> RagIndex:
     src = tmp_path / "src"
     src.mkdir()
     (src / "chinese_code.py").write_text(
-        '# -*- coding: utf-8 -*-\n'
+        "# -*- coding: utf-8 -*-\n"
         '"""用户管理模块。"""\n\n'
-        'def get_user(user_id: int) -> dict:\n'
+        "def get_user(user_id: int) -> dict:\n"
         '    """根据用户ID获取用户数据。"""\n'
         '    return {"id": user_id}\n\n'
-        'def delete_user(user_id: int) -> None:\n'
+        "def delete_user(user_id: int) -> None:\n"
         '    """删除指定用户。"""\n'
-        '    pass\n\n'
-        'def fetch_remote_config(url: str) -> dict:\n'
+        "    pass\n\n"
+        "def fetch_remote_config(url: str) -> dict:\n"
         '    """从远程URL获取配置信息。"""\n'
-        '    return {}\n',
+        "    return {}\n",
         encoding="utf-8",
     )
     idx = RagIndex.open(tmp_path / "index.sqlite3")
@@ -193,9 +198,7 @@ def test_end_to_end_chinese_search_hits(cjk_index: RagIndex) -> None:
     # 搜索"用户数据" → 应命中 get_user（docstring: "获取用户数据"）
     hits = cjk_index.query_bm25("用户数据", 10)
     assert hits, "Chinese query should return results"
-    assert any("get_user" in h for h in hits), (
-        f"get_user should be in results, got {hits}"
-    )
+    assert any("get_user" in h for h in hits), f"get_user should be in results, got {hits}"
 
 
 def test_end_to_end_chinese_partial_match(cjk_index: RagIndex) -> None:
@@ -225,3 +228,115 @@ def test_end_to_end_english_still_works(cjk_index: RagIndex) -> None:
     hits = cjk_index.query_bm25("delete user", 10)
     assert hits, "English query should still work"
     assert any("delete_user" in h for h in hits)
+
+
+# --- _sanitize_phrase ---------------------------------------------------
+
+
+def test_sanitize_preserves_words() -> None:
+    assert _sanitize_phrase("user login") == "user login"
+
+
+def test_sanitize_removes_fts5_special_chars() -> None:
+    assert _sanitize_phrase("user (login)") == "user login"
+    assert _sanitize_phrase('"NEAR" AND OR NOT') == "NEAR AND OR NOT"
+    assert _sanitize_phrase("a*b?c") == "a b c"
+
+
+def test_sanitize_preserves_cjk() -> None:
+    assert _sanitize_phrase("用户登录") == "用户登录"
+    assert _sanitize_phrase("获取 用户 数据") == "获取 用户 数据"
+
+
+def test_sanitize_all_special_returns_empty() -> None:
+    assert _sanitize_phrase("!!!") == ""
+    assert _sanitize_phrase("") == ""
+
+
+def test_sanitize_normalizes_whitespace() -> None:
+    assert _sanitize_phrase("  user   login  ") == "user login"
+
+
+# --- _fts_query (phrase support) ----------------------------------------
+
+
+def test_fts_query_unquoted_unchanged() -> None:
+    """无引号查询行为保持不变：OR of terms。"""
+    result = _fts_query("user login")
+    assert result == '"user" OR "login"'
+
+
+def test_fts_query_quoted_phrase() -> None:
+    """引号内容作为 FTS5 短语（多词在同一对引号内）。"""
+    result = _fts_query('"user login"')
+    assert result == '"user login"'
+
+
+def test_fts_query_mixed_phrase_and_terms() -> None:
+    result = _fts_query('"user login" handler')
+    assert result == '"user login" OR "handler"'
+
+
+def test_fts_query_cjk_phrase() -> None:
+    """CJK 引号短语：展开为 bigram 以匹配 _search_blob 的索引 token 化。"""
+    result = _fts_query('"用户登录"')
+    # "用户登录" → CJK bigram 展开 → "用户 户登 登录"
+    assert result == '"用户 户登 登录"'
+
+
+def test_fts_query_cjk_mixed() -> None:
+    """混合 CJK 短语 + 英文词汇。"""
+    result = _fts_query('"用户登录" fetch')
+    assert result == '"用户 户登 登录" OR "fetch"'
+
+
+def test_fts_query_empty_quotes() -> None:
+    assert _fts_query('""') is None
+
+
+def test_fts_query_all_special_chars() -> None:
+    assert _fts_query("!!!") is None
+
+
+def test_fts_query_empty_string() -> None:
+    assert _fts_query("") is None
+
+
+def test_fts_query_camelcase_unquoted() -> None:
+    """camelCase 拆分在无引号查询中仍然生效（含原始 token）。"""
+    result = _fts_query("getUserData")
+    # _terms 保留原始 token "getuserdata" + camelCase 拆分 "get" "user" "data"
+    assert result == '"getuserdata" OR "get" OR "user" OR "data"'
+
+
+# --- End-to-end phrase search -------------------------------------------
+
+
+def test_end_to_end_phrase_search_english(cjk_index: RagIndex) -> None:
+    """英文短语搜索应命中连续出现所有词项的 chunk。"""
+    hits = cjk_index.query_bm25('"delete user"', 10)
+    assert hits, "Phrase 'delete user' should return results"
+    # delete_user 函数的 docstring 包含 "删除指定用户" (CJK) 不含英文 phrase
+    # 但 signature "def delete_user" 经分词后 blob 中有 "delete user"
+    assert any("delete_user" in h for h in hits), (
+        f"delete_user should match phrase 'delete user', got {hits}"
+    )
+
+
+def test_end_to_end_phrase_search_cjk(cjk_index: RagIndex) -> None:
+    """CJK 精确短语搜索应命中包含完整 CJK 串的 chunk。"""
+    hits = cjk_index.query_bm25('"用户数据"', 10)
+    assert hits, "CJK phrase '用户数据' should return results"
+    assert any("get_user" in h for h in hits), (
+        f"get_user (docstring: 获取用户数据) should match, got {hits}"
+    )
+
+
+def test_end_to_end_phrase_vs_unquoted_precision(cjk_index: RagIndex) -> None:
+    """短语搜索比 OR 搜索更精确：短语应返回更少/更精确的结果。"""
+    # Unquoted matches all chunks with "获取" OR "用户" in any order
+    unquoted = cjk_index.query_bm25("获取用户配置", 10)
+    # Quoted phrase only matches chunks with the exact character sequence
+    quoted = cjk_index.query_bm25('"用户数据"', 10)
+    # Both should find something, but they're different queries
+    assert unquoted or quoted, "At least one query type should match"

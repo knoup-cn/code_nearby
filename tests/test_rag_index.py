@@ -7,10 +7,10 @@ from pathlib import Path
 
 import pytest
 
-from brain import config
-from brain.operations.analysis import run_full_analysis
-from brain.rag.chunker import chunk_file
-from brain.rag.index import RagIndex
+from code_nearby import config
+from code_nearby.operations.analysis import run_full_analysis
+from code_nearby.rag.chunker import chunk_file
+from code_nearby.rag.index import RagIndex
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "sample_pkg"
 

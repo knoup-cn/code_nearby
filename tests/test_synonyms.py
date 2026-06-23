@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
 try:
     import numpy as np
+
     _HAS_NUMPY = True
 except ImportError:
     np = None  # type: ignore[assignment]
     _HAS_NUMPY = False
 
-from brain.rag.synonyms import (
+from code_nearby.rag.synonyms import (
     _SYNONYM_LOOKUP,
     _build_vocab,
     _cosine,
@@ -81,9 +85,7 @@ class TestEmbedFallback:
 
     def test_embed_degraded_when_fastembed_not_installed(self, monkeypatch) -> None:
         """fastembed 不可用时静默退化。"""
-        monkeypatch.setattr(
-            "brain.rag.synonyms._get_embed_model", lambda: None
-        )
+        monkeypatch.setattr("code_nearby.rag.synonyms._get_embed_model", lambda: None)
         result = expand_query("unknown_term_xyz", enable_embed=True)
         assert result == "unknown_term_xyz"  # 没 crash
 

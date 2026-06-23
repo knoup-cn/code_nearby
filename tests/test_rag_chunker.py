@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import itertools
 from pathlib import Path
 
 import pytest
 
-from brain.rag.chunker import chunk_file, detect_language
-from brain.rag.schema import Chunk, compute_content_hash
+from code_nearby.rag.chunker import chunk_file, detect_language
+from code_nearby.rag.schema import Chunk, compute_content_hash
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "sample_pkg"
 FIXTURE_FILE = FIXTURE_ROOT / "repository.py"
@@ -81,7 +82,7 @@ def test_methods_carry_parent_class(chunks: list[Chunk]) -> None:
 def test_chunks_do_not_overlap(chunks: list[Chunk]) -> None:
     # non-module chunks partition the file without overlapping line spans
     spans = sorted((c.start_line, c.end_line) for c in chunks if c.chunk_type != "module")
-    for (_, prev_end), (next_start, _) in zip(spans, spans[1:], strict=False):
+    for (_, prev_end), (next_start, _) in itertools.pairwise(spans):
         assert next_start > prev_end
 
 
@@ -198,3 +199,76 @@ def test_chunk_java_file() -> None:
     assert any(c.symbol == "Repository" and c.chunk_type == "class" for c in chunks)
     # 所有 chunk language 字段应为 "java"
     assert all(c.language == "java" for c in chunks)
+
+# ======================================================================
+# 物理分解测试
+# ======================================================================
+
+
+def test_large_function_decomposes_into_blocks(tmp_path: Path) -> None:
+    """超过 MAX_FUNCTION_LINES 的函数应分解为 sub-chunk。"""
+    lines = ["def big():\n", '    """Doc."""\n']
+    # 生成 ~250 行的函数体（超过 MAX_FUNCTION_LINES=200）
+    for i in range(120):
+        lines.append(f"    x{i} = {i}\n")
+    lines.append("    if True:\n")
+    for i in range(120, 240):
+        lines.append(f"        y{i} = {i}\n")
+    lines.append("    return None\n")
+
+    f = tmp_path / "bigfunc.py"
+    f.write_text("".join(lines))
+    chunks = chunk_file(f, tmp_path)
+
+    # sub-chunk 的 chunk_id 包含 :blk/ 后缀
+    sub_chunks = [c for c in chunks if c.chunk_type == "function"]
+    assert len(sub_chunks) >= 2, f"got {len(sub_chunks)} sub-chunks"
+    for sc in sub_chunks:
+        assert ":blk/" in sc.chunk_id
+        assert "[in big()]" in sc.content
+        assert "def big():" in sc.content  # 上下文签名头
+
+    # 所有 sub-chunk 不应有重叠行
+    spans = sorted((c.start_line, c.end_line) for c in sub_chunks)
+    for (_, prev_end), (next_start, _) in itertools.pairwise(spans):
+        assert next_start > prev_end, f"blocks overlap: {spans}"
+
+
+def test_small_function_stays_intact(tmp_path: Path) -> None:
+    """小函数不应被分解。"""
+    src = """def small() -> int:
+    '''A small function.'''
+    x = 1
+    y = 2
+    return x + y
+"""
+    f = tmp_path / "small.py"
+    f.write_text(src)
+    chunks = chunk_file(f, tmp_path)
+
+    func_chunks = [c for c in chunks if c.chunk_type == "function"]
+    assert len(func_chunks) == 1
+    assert ":blk/" not in func_chunks[0].chunk_id
+    assert "return x + y" in func_chunks[0].content
+
+
+def test_decomposition_preserves_function_identity(tmp_path: Path) -> None:
+    """分解后 sub-chunk 的 qualified_name 应为父函数名。"""
+    lines = ["def handler(req):\n", '    """Handle request."""\n']
+    for i in range(120):
+        lines.append(f"    step{i} = {i}\n")
+    lines.append("    if req.auth:\n")
+    for i in range(120, 240):
+        lines.append(f"        process({i})\n")
+    lines.append("    return req\n")
+
+    f = tmp_path / "handler.py"
+    f.write_text("".join(lines))
+    chunks = chunk_file(f, tmp_path)
+
+    sub_chunks = [c for c in chunks if c.chunk_type == "function"]
+    assert len(sub_chunks) >= 2, f"got {len(sub_chunks)} sub-chunks"
+    for sc in sub_chunks:
+        assert sc.qualified_name == "handler"
+        assert sc.symbol.startswith("handler:blk/")
+        assert "[in handler()]" in sc.content

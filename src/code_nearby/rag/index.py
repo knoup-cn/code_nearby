@@ -2,10 +2,9 @@
 
 仅用标准库 ``sqlite3``——无向量数据库、无外部服务。每个项目一个 ``.sqlite3`` 文件：
 
-- ``chunks``      : 规范元数据 + 源码内容
+- ``chunks``      : 规范元数据（不含源码 content——索引是地图，不是仓库）
 - ``chunks_fts``  : FTS5 BM25 基于分词 blob（标识符拆分以支持子 token 匹配）
 - ``chunks_tri``  : FTS5 trigram 基于 symbol/qualified-name 用于子串匹配
-- ``meta``        : 索引级 key/value（schema 版本）
 
 ``chunks`` 表同时作为增量 manifest，通过 ``chunk_id → content_hash`` 实现。
 """
@@ -14,12 +13,18 @@ from __future__ import annotations
 
 import re
 import sqlite3
-from collections.abc import Iterable
-from pathlib import Path
+from typing import TYPE_CHECKING, Literal
 
-from brain.rag.schema import Chunk
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
 
-SCHEMA_VERSION = "1"
+from code_nearby.rag.schema import Chunk
+
+
+class OldSchemaError(Exception):
+    """旧索引 schema 异常——需执行 ``nearby analyze --full`` 重建。"""
+
 
 _DDL = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -35,20 +40,18 @@ CREATE TABLE IF NOT EXISTS chunks (
   imports       TEXT NOT NULL DEFAULT '',
   signature     TEXT NOT NULL DEFAULT '',
   docstring     TEXT NOT NULL DEFAULT '',
-  content       TEXT NOT NULL,
   content_hash  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(chunk_id UNINDEXED, blob);
 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_tri
   USING fts5(chunk_id UNINDEXED, sym, tokenize='trigram');
-CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 """
 
 _COLUMNS = (
     "chunk_id, file_path, language, chunk_type, symbol, qualified_name, "
     "parent_class, start_line, end_line, imports, signature, docstring, "
-    "content, content_hash"
+    "content_hash"
 )
 
 # 在大小写边界拆分 camelCase / PascalCase（零宽断言）
@@ -108,13 +111,22 @@ class RagIndex:
     def open(cls, db_path: Path) -> RagIndex:
         """打开（不存在则创建）位于 ``db_path`` 的索引。"""
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+
+        # 旧 schema 检测：content 列已从新 schema 中移除
+        try:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(chunks)")}
+            if "content" in cols:
+                conn.close()
+                raise OldSchemaError(
+                    "Old index schema detected ('content' column present). "
+                    "Run 'nearby analyze --full' to rebuild."
+                )
+        except sqlite3.OperationalError:
+            pass  # 表尚不存在——新索引的直接创建路径
+
         conn.executescript(_DDL)
-        conn.execute(
-            "INSERT OR IGNORE INTO meta(key, value) VALUES('schema_version', ?)",
-            (SCHEMA_VERSION,),
-        )
         conn.commit()
         return cls(conn)
 
@@ -122,10 +134,15 @@ class RagIndex:
         self._conn.close()
 
     def __enter__(self) -> RagIndex:
+        self._conn.execute("BEGIN")
         return self
 
-    def __exit__(self, *exc: object) -> None:
-        self.close()
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> Literal[False]:
+        if exc_type is None:
+            self._conn.commit()
+        else:
+            self._conn.rollback()
+        return False
 
     # --- 写入 ------------------------------------------------------------
 
@@ -136,15 +153,18 @@ class RagIndex:
             for chunk in chunks:
                 self._delete_fts(chunk.chunk_id)
                 row = chunk.to_row()
+                del row["content"]  # content 不持久化到 chunks 表
                 self._conn.execute(
                     f"INSERT OR REPLACE INTO chunks ({_COLUMNS}) "
                     f"VALUES (:{', :'.join(_COLUMNS.split(', '))})",
                     row,
                 )
+                # FTS blob 仍使用 chunk.content 构建
                 self._conn.execute(
                     "INSERT INTO chunks_fts(chunk_id, blob) VALUES (?, ?)",
                     (chunk.chunk_id, _search_blob(chunk)),
                 )
+                # trigram 不变
                 self._conn.execute(
                     "INSERT INTO chunks_tri(chunk_id, sym) VALUES (?, ?)",
                     (chunk.chunk_id, f"{chunk.symbol} {chunk.qualified_name}"),
@@ -194,7 +214,7 @@ class RagIndex:
         return [r["file_path"] for r in rows]
 
     def count(self) -> int:
-        return self._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
+        return self._conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]  # type: ignore[no-any-return]
 
     def get_chunks(self, chunk_ids: list[str]) -> list[Chunk]:
         """按 id 批量获取完整 chunk，保持输入顺序。"""
@@ -207,6 +227,59 @@ class RagIndex:
         ).fetchall()
         by_id = {r["chunk_id"]: Chunk.from_row(dict(r)) for r in rows}
         return [by_id[cid] for cid in chunk_ids if cid in by_id]
+
+    # --- 文件/模块级元数据查询 -------------------------------------------
+
+    def get_file_symbols(self, file_path: str) -> list[dict]:
+        """返回文件的所有符号摘要。
+
+        Returns:
+            ``[{symbol, qualified_name, chunk_type, start_line, signature}, ...]``
+            按 start_line 升序。
+        """
+        rows = self._conn.execute(
+            "SELECT symbol, qualified_name, chunk_type, start_line, signature "
+            "FROM chunks WHERE file_path = ? ORDER BY start_line",
+            (file_path,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_file_imports(self, file_path: str) -> list[str]:
+        """返回模块级 chunk 的 import 列表。"""
+        row = self._conn.execute(
+            "SELECT imports FROM chunks WHERE chunk_type = 'module' AND file_path = ?",
+            (file_path,),
+        ).fetchone()
+        if row is None or not row["imports"]:
+            return []
+        import json as _json
+
+        return _json.loads(row["imports"])  # type: ignore[no-any-return]
+
+    def get_project_symbols(self, language: str | None = None) -> list[dict]:
+        """返回项目全局符号概览（所有 function/class chunk 的摘要）。
+
+        Args:
+            language: 可选的语言过滤
+
+        Returns:
+            ``[{symbol, qualified_name, chunk_type, file_path, start_line, signature}, ...]``
+            按 file_path 升序。
+        """
+        if language:
+            rows = self._conn.execute(
+                "SELECT symbol, qualified_name, chunk_type, file_path, start_line, signature "
+                "FROM chunks WHERE chunk_type IN ('function', 'class') AND language = ? "
+                "ORDER BY file_path, start_line",
+                (language,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT symbol, qualified_name, chunk_type, file_path, start_line, signature "
+                "FROM chunks WHERE chunk_type IN ('function', 'class') "
+                "ORDER BY file_path, start_line"
+            ).fetchall()
+        return [dict(r) for r in rows]
 
     # --- 查询 -----------------------------------------------------------
 
@@ -326,9 +399,53 @@ def _terms(text: str) -> list[str]:
     return result
 
 
+# 拆分引号短语 vs 无引号词段
+_QUOTED = re.compile(r'"([^"]*)"|(\S+)')
+
+
+def _is_all_cjk_or_space(text: str) -> bool:
+    """文本是否全由 CJK 字符或空白组成。"""
+    return bool(text) and all(_is_cjk(ch) or ch.isspace() for ch in text)
+
+
+def _sanitize_phrase(text: str) -> str:
+    r"""清理短语文本，移除 FTS5 特殊字符。
+
+    保留 Unicode 字母数字/下划线/空白（``\w\s``），其余替换为空格。
+    Python 3 默认 UNICODE 模式下 ``\w`` 已覆盖 CJK。
+    """
+    cleaned = re.sub(r"[^\w\s]", " ", text)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 def _fts_query(text: str) -> str | None:
-    """构建安全的 FTS5 MATCH 表达式（带引号词项的 OR）。"""
-    terms = _terms(text)
-    if not terms:
+    """构建安全的 FTS5 MATCH 表达式。
+
+    支持引号短语搜索：引号内的文本作为 FTS5 短语（保留词序），
+    引号外的词汇各自以 OR 连接。
+
+    - ``"user login"``  → 精确短语
+    - ``handler``       → 词汇 OR 搜索
+    - ``"用户登录"``    → CJK 精确短语（bigram 展开后匹配索引）
+    """
+    parts: list[str] = []
+    for match in _QUOTED.finditer(text):
+        phrase = match.group(1)
+        word = match.group(2)
+        if phrase is not None:
+            clean = _sanitize_phrase(phrase)
+            if not clean:
+                continue
+            if _is_all_cjk_or_space(clean):
+                # CJK 短语：展开为 bigram 以对齐 _search_blob 的索引 token 化
+                cjk_tokens = _cjk_bigrams(clean)
+                if cjk_tokens:
+                    parts.append('"' + " ".join(cjk_tokens) + '"')
+            else:
+                parts.append('"' + clean + '"')
+        elif word:
+            for t in _terms(word):
+                parts.append(f'"{t}"')
+    if not parts:
         return None
-    return " OR ".join(f'"{t}"' for t in terms)
+    return " OR ".join(parts)

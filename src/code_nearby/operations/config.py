@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from brain import config
+from code_nearby import config
 
 
 def clear_config() -> bool:

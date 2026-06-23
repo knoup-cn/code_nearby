@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from brain import graph
-from brain.rag.index import RagIndex
-from brain.rag.schema import Chunk, compute_content_hash
+from code_nearby import graph
+from code_nearby.rag.index import RagIndex
+from code_nearby.rag.schema import Chunk, compute_content_hash
 
 
 def _build_test_index(db_path: Path) -> RagIndex:
@@ -152,34 +152,34 @@ def test_save_graph():
 
 def test_resolve_dependency_exact():
     """精确匹配模块名。"""
-    names = {"brain.storage", "brain.analyzer", "brain.cli"}
-    assert graph._resolve_dependency("brain.storage", names) == "brain.storage"
+    names = {"code_nearby.storage", "code_nearby.analyzer", "code_nearby.cli"}
+    assert graph._resolve_dependency("code_nearby.storage", names) == "code_nearby.storage"
     assert graph._resolve_dependency("nonexistent", names) is None
 
 
 def test_resolve_dependency_suffix():
     """后缀匹配模块名。"""
-    names = {"brain.storage", "brain.analyzer", "brain.cli"}
-    assert graph._resolve_dependency("storage", names) == "brain.storage"
-    assert graph._resolve_dependency("analyzer", names) == "brain.analyzer"
+    names = {"code_nearby.storage", "code_nearby.analyzer", "code_nearby.cli"}
+    assert graph._resolve_dependency("storage", names) == "code_nearby.storage"
+    assert graph._resolve_dependency("analyzer", names) == "code_nearby.analyzer"
     assert graph._resolve_dependency("unknown", names) is None
 
 
 def test_resolve_dependency_prefers_module_over_symbol():
     """依赖叶子名必须解析为模块，而非同名符号。
 
-    Regression: ``brain.cli`` 定义一个名为 ``context`` 的命令符号
-    （节点 ``brain.cli.context``），而 ``brain.context`` 才是真正的
+    Regression: ``code_nearby.cli`` 定义一个名为 ``context`` 的命令符号
+    （节点 ``code_nearby.cli.context``），而 ``code_nearby.context`` 才是真正的
     模块。``[[context]]`` 导入依赖必须解析为模块。
     """
     # _resolve_dependency 只在模块名集合中搜索，所以不会匹配符号
-    names = {"brain.cli", "brain.context"}
-    assert graph._resolve_dependency("context", names) == "brain.context"
+    names = {"code_nearby.cli", "code_nearby.context"}
+    assert graph._resolve_dependency("context", names) == "code_nearby.context"
 
 
 def test_file_path_to_module():
     """文件路径 → 模块名转换。"""
-    assert graph._file_path_to_module("src/brain/analyzer.py") == "brain.analyzer"
+    assert graph._file_path_to_module("src/code_nearby/analyzer.py") == "code_nearby.analyzer"
     assert graph._file_path_to_module("lib/utils/helpers.go") == "utils.helpers"
     assert graph._file_path_to_module("app/components/Button.tsx") == "components.Button"
     assert graph._file_path_to_module("module.py") == "module"
@@ -189,7 +189,7 @@ def test_file_path_to_module():
 def test_import_to_candidate():
     """import 字符串 → 候选模块名。"""
     # Python 点分路径
-    assert graph._import_to_candidate("brain.storage") == "brain.storage"
+    assert graph._import_to_candidate("code_nearby.storage") == "code_nearby.storage"
     # 文件路径 → stem
     assert graph._import_to_candidate("./local") == "local"
     assert graph._import_to_candidate("@/utils/helpers") == "helpers"

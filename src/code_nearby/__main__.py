@@ -9,7 +9,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         run_tui()
     elif len(sys.argv) == 2 and sys.argv[1] == ".":
-        sys.argv = ["brain", "analyze", "."]
+        sys.argv = ["nearby", "analyze", "."]
         app()
     else:
         app()

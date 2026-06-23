@@ -1,11 +1,13 @@
 """语言无关的代码 RAG chunk schema。
 
-每个代码符号一条记录。``content`` 存储真实源码供 LLM 上下文使用。
+每个代码符号一条记录。``content`` 仅用于 chunker→index upsert 期间构建
+FTS blob 与 content_hash；不持久化到 chunks 表；检索时通过 Source Fetch 从磁盘获取。
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,11 +28,12 @@ class Chunk:
     imports: tuple[str, ...]  # 模块级 import 列表
     signature: str  # 装饰器 + def/class 头部，空白已压缩
     docstring: str | None
-    content: str  # 符号的源码体
+    content: str  # 符号的源码体（仅用于 chunker→index upsert 期间构建 FTS blob 与 content_hash；
+    # 不持久化到 chunks 表；检索时通过 Source Fetch 从磁盘获取）
     content_hash: str  # sha256(content) — G4 增量更新 key
 
     def to_row(self) -> dict[str, Any]:
-        """展平为 SQLite 行（imports 以换行符连接）。"""
+        """展平为 SQLite 行（imports 以 JSON 数组序列化）。"""
         return {
             "chunk_id": self.chunk_id,
             "file_path": self.file_path,
@@ -41,7 +44,7 @@ class Chunk:
             "parent_class": self.parent_class or "",
             "start_line": self.start_line,
             "end_line": self.end_line,
-            "imports": "\n".join(self.imports),
+            "imports": json.dumps(list(self.imports), ensure_ascii=False),
             "signature": self.signature,
             "docstring": self.docstring or "",
             "content": self.content,
@@ -51,7 +54,7 @@ class Chunk:
     @classmethod
     def from_row(cls, row: dict[str, Any]) -> Chunk:
         """从 :meth:`to_row` 产出的 SQLite 行重建 Chunk。"""
-        imports_raw = row["imports"] or ""
+        imports_raw = row["imports"] or "[]"
         return cls(
             chunk_id=row["chunk_id"],
             file_path=row["file_path"],
@@ -60,12 +63,12 @@ class Chunk:
             symbol=row["symbol"],
             qualified_name=row["qualified_name"],
             parent_class=row["parent_class"] or None,
-            start_line=int(row["start_line"]),
-            end_line=int(row["end_line"]),
-            imports=tuple(imports_raw.split("\n")) if imports_raw else (),
+            start_line=row["start_line"],
+            end_line=row["end_line"],
+            imports=tuple(json.loads(imports_raw)),
             signature=row["signature"],
             docstring=row["docstring"] or None,
-            content=row["content"],
+            content=row.get("content", ""),
             content_hash=row["content_hash"],
         )
 

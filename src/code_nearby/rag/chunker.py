@@ -6,13 +6,17 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from tree_sitter import Node
+if TYPE_CHECKING:
+    from tree_sitter import Node
 
-from brain.lang_config import LanguageConfig, detect_language, get_config
-from brain.rag.schema import Chunk, base_chunk_id, compute_content_hash
-from brain.tree_sitter_utils import (
+from code_nearby.lang_config import LanguageConfig, detect_language, get_config
+from code_nearby.rag.schema import Chunk, base_chunk_id, compute_content_hash
+from code_nearby.tree_sitter_utils import (
+    StatementBlock,
     collect_imports,
+    decompose_function_body,
     extract_signature,
     get_docstring,
     get_module_docstring,
@@ -22,6 +26,9 @@ from brain.tree_sitter_utils import (
     relative_path,
     walk_symbols,
 )
+
+# 函数超过此行数则触发物理分解
+MAX_FUNCTION_LINES = 200
 
 
 def chunk_file(file_path: Path, project_root: Path) -> list[Chunk]:
@@ -57,17 +64,36 @@ def chunk_file(file_path: Path, project_root: Path) -> list[Chunk]:
     for info in walk_symbols(root, src, cfg):
         if info.kind in ("function", "method"):
             qname = ".".join([*info.scope, info.name]) if info.scope else info.name
+            sig = extract_signature(
+                builder.source_lines, info.span_node, info.inner_node
+            )
+            line_count = info.end_line - info.start_line + 1
+
+            if line_count > MAX_FUNCTION_LINES:
+                # 超大函数：物理分解为 StatementBlock 子块
+                body_node = info.inner_node.child_by_field_name("body")
+                if body_node is not None:
+                    blocks = decompose_function_body(body_node)
+                    if blocks:
+                        for blk in blocks:
+                            sub = _make_sub_chunk(
+                                builder, info, qname, sig, blk, len(blocks)
+                            )
+                            builder.add(sub)
+                        continue  # 不再创建完整函数 chunk
+
+            parent_cls = (
+                info.scope[-1] if info.scope and info.kind == "method" else None
+            )
             builder.add(
                 builder.make(
                     chunk_type=info.kind,
                     symbol=info.name,
                     qualified_name=qname,
-                    parent_class=info.scope[-1] if info.scope and info.kind == "method" else None,
+                    parent_class=parent_cls,
                     start_line=info.start_line,
                     end_line=info.end_line,
-                    signature=extract_signature(
-                        builder.source_lines, info.span_node, info.inner_node
-                    ),
+                    signature=sig,
                     docstring=get_docstring(src, info.inner_node),
                     content=node_text(src, info.span_node),
                 )
@@ -188,6 +214,55 @@ def _module_chunk(
 # ======================================================================
 # Chunker 专用 helper（不放入 tree_sitter_utils）
 # ======================================================================
+
+
+def _make_sub_chunk(
+    builder: _ChunkBuilder,
+    info: object,
+    qualified_name: str,
+    signature: str,
+    block: StatementBlock,
+    total: int,
+) -> Chunk:
+    """从 :class:`StatementBlock` 构建子块 Chunk。"""
+    from code_nearby.tree_sitter_utils import SymbolInfo
+
+    assert isinstance(info, SymbolInfo)
+
+    chunk_id = base_chunk_id(builder.rel_path, qualified_name)
+    chunk_id = f"{chunk_id}:blk/{block.index}"
+    if chunk_id in builder._seen_ids:
+        chunk_id = f"{chunk_id}:{block.start_line}"
+    builder._seen_ids.add(chunk_id)
+
+    # 上下文头：告知 LLM 此块属于哪个函数
+    header = f"[in {qualified_name}()]\n{signature}\n"
+    header += (
+        f"# --- block {block.index + 1}/{total}: "
+        f"{block.label} (L{block.start_line}-L{block.end_line}) ---"
+    )
+    body_parts = [node_text(builder.src, n) for n in block.nodes]
+    content = header + "\n" + "\n".join(body_parts)
+
+    parent_cls = (
+        info.scope[-1] if info.scope and info.kind == "method" else None
+    )
+    return Chunk(
+        chunk_id=chunk_id,
+        file_path=builder.rel_path,
+        language=builder.language,
+        chunk_type=info.kind,
+        symbol=f"{info.name}:blk/{block.index}",
+        qualified_name=qualified_name,
+        parent_class=parent_cls,
+        start_line=block.start_line,
+        end_line=block.end_line,
+        imports=builder.imports,
+        signature=signature,
+        docstring=None,
+        content=content,
+        content_hash=compute_content_hash(content),
+    )
 
 
 def _class_preamble_end(class_node: Node, cfg: LanguageConfig) -> int:

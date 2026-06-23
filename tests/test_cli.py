@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from brain.cli import app
+from code_nearby.cli import app
 
 runner = CliRunner()
 
@@ -19,8 +19,8 @@ def test_status_shows_kb_path(tmp_path, monkeypatch):
     def mock_get_kb_path():
         return vault_path
 
-    monkeypatch.setattr("brain.cli.config.get_kb_path", mock_get_kb_path)
-    monkeypatch.setattr("brain.tui.config.get_kb_path", mock_get_kb_path)
+    monkeypatch.setattr("code_nearby.cli.config.get_kb_path", mock_get_kb_path)
+    monkeypatch.setattr("code_nearby.tui.config.get_kb_path", mock_get_kb_path)
 
     result = runner.invoke(app, ["status"])
 
@@ -32,7 +32,7 @@ def test_status_shows_kb_path(tmp_path, monkeypatch):
 def test_clear_config(tmp_path, monkeypatch):
     """Test clearing configuration."""
     config_file = tmp_path / "config.json"
-    monkeypatch.setattr("brain.config.get_config_path", lambda: config_file)
+    monkeypatch.setattr("code_nearby.config.get_config_path", lambda: config_file)
     # Write a config so clear has something to delete
     config_file.write_text('{"local_path": "/custom/path"}')
 
@@ -53,7 +53,7 @@ def test_analyze_runs_on_source_directory(tmp_path, monkeypatch):
     def mock_get_kb_path():
         return kb_path
 
-    monkeypatch.setattr("brain.cli.config.get_kb_path", mock_get_kb_path)
+    monkeypatch.setattr("code_nearby.cli.config.get_kb_path", mock_get_kb_path)
 
     mock_result = {
         "success": True,
@@ -66,7 +66,7 @@ def test_analyze_runs_on_source_directory(tmp_path, monkeypatch):
         "error": None,
     }
 
-    with patch("brain.cli.run_full_analysis", return_value=mock_result):
+    with patch("code_nearby.cli.run_full_analysis", return_value=mock_result):
         result = runner.invoke(app, ["analyze", str(project)])
 
     assert result.exit_code == 0

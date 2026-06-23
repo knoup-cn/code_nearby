@@ -10,14 +10,15 @@
 
 Usage::
 
-    from brain.rag.synonyms import expand_query
+    from code_nearby.rag.synonyms import expand_query
     expanded = expand_query("fetch user data")  # → "fetch user data get retrieve load"
 """
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import numpy as np
@@ -167,7 +168,7 @@ def expand_query(
 _embed_model = None  # 懒加载单例
 
 
-def _get_embed_model():
+def _get_embed_model() -> Any:
     """延迟加载 fastembed 模型。首次调用下载 ~35MB，缓存于 HuggingFace cache。
 
     Returns:
@@ -178,9 +179,7 @@ def _get_embed_model():
         try:
             from fastembed import TextEmbedding
 
-            _embed_model = TextEmbedding(
-                "sentence-transformers/paraphrase-MiniLM-L3-v2"
-            )
+            _embed_model = TextEmbedding("sentence-transformers/paraphrase-MiniLM-L3-v2")
         except (ImportError, OSError):
             return None
     return _embed_model
@@ -190,6 +189,7 @@ def is_embed_available() -> bool:
     """检查 fastembed 模型是否可用（不触发下载）。"""
     try:
         import fastembed  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -230,7 +230,7 @@ def _expand_with_embed(
 
     import numpy as np
 
-    term_vec = np.array(list(model.embed([term]))[0])
+    term_vec = np.array(next(iter(model.embed([term]))))
     candidate_vecs = list(model.embed(candidates))
 
     scored: list[tuple[str, float]] = []
@@ -279,7 +279,7 @@ def load_custom_synonyms(path: str | Path) -> dict[str, list[str]] | None:
     try:
         import yaml
     except ImportError:
-        yaml = None  # type: ignore[assignment]
+        yaml = None
 
     path = Path(path)
     if not path.exists():
@@ -293,10 +293,8 @@ def load_custom_synonyms(path: str | Path) -> dict[str, list[str]] | None:
     # 尝试 YAML，失败则 JSON
     data: dict | None = None
     if yaml is not None:
-        try:
+        with contextlib.suppress(Exception):  # yaml.YAMLError 或 AttributeError
             data = yaml.safe_load(raw)
-        except Exception:  # yaml.YAMLError 或 AttributeError
-            pass
 
     if data is None:
         try:

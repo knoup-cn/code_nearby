@@ -1,122 +1,99 @@
-# brain
+# Code Nearby
 
-A codebase analysis and knowledge management tool with both TUI and CLI interfaces. Automatically analyzes your codebase and generates dependency graphs and structured documentation.
+**Give your LLM the context it needs — right next to your code.**
 
-## ✨ Features
+Code Nearby is an MCP server that indexes your codebase and gives AI assistants the ability to search, explore, and understand your project. Think of it as giving Claude Code (or any MCP-compatible client) a map of everything **nearby** your code: symbols, dependencies, imports, and the code itself.
 
-- 🔍 **AST-based Analysis** - Extracts functions, classes, type hints, and docstrings
-- 📊 **Knowledge Graphs** - Visualize module dependencies
-- 🔄 **Incremental Updates** - Only analyzes changed files
-- 🔄 **Auto-Sync** - Automatically commit and push knowledge base changes
-- 🎨 **TUI Interface** - Beautiful terminal UI with Textual
+## Why Code Nearby?
 
-## 🚀 Quick Start
+LLMs are powerful, but they're blind to your codebase. You end up copy-pasting files, explaining architecture, and repeating yourself. Code Nearby solves this by:
 
-```bash
-# Install uv if needed: https://docs.astral.sh/uv/getting-started/installation/
-# Create the virtual environment and install dependencies from uv.lock
-uv sync
+- **Indexing** your project into a fast SQLite FTS5 + symbol search engine
+- **Exposing** the index as MCP tools (`nearby_search`, `nearby_file_info`, etc.)
+- **Auto-updating** via file watching (watchdog) — no manual re-indexing
 
-# Analyze a source directory
-uv run brain analyze .
-# or simply
-uv run brain .
-```
+## Quick Start
 
-> 💡 Prefix commands with `uv run` (e.g. `uv run brain analyze .`), or activate the
-> environment once with `source .venv/bin/activate` and then call `brain` directly
-> (as shown in the Usage section below).
-
-See [Quick Start Guide](./docs/QUICKSTART.md) for detailed instructions.
-
-## 📖 Documentation
-
-- **[Quick Start Guide](./docs/QUICKSTART.md)** - Get started in 5 minutes
-- **[Implementation Summary](./docs/IMPLEMENTATION_SUMMARY.md)** - Technical details
-
-## 📁 Knowledge Base Structure
-
-```
-~/.brain/
-└── my-project/
-    ├── _GRAPH.json              # 依赖图
-    └── .rag/
-        └── index.sqlite3        # RAG 索引
-```
-
-## 🎯 Use Cases
-
-### 1. Visualize Your Codebase
-
-- Explore module dependency graphs
-- Understand relationships between components
-
-### 2. Code Review & Documentation
-
-- Review function signatures and docstrings
-- Understand dependencies at a glance
-- Track changes over time
-
-### 3. LLM Knowledge Base (Coming Soon)
-
-- MCP Skills integration
-- Semantic search
-- Code Q&A
-
-## 🛠️ Usage
+### 1. Install
 
 ```bash
-brain              # Launch TUI
-brain init         # Clone/configure the knowledge base repository
-brain status       # Show configuration
-brain .            # Analyze current source repository (shortcut for `brain analyze .`)
-brain analyze .    # Analyze current source repository
-brain analyze --sync  # Analyze and auto-commit/push to knowledge base
-brain sync         # Manually sync knowledge base to remote
-brain --help       # Show all commands
+pip install code-nearby[mcp]
+# or with uv:
+uv add code-nearby --extra mcp
 ```
 
-## 🧪 Development
+### 2. Configure MCP Client
+
+Add to your Claude Code `.claude/settings.json`:
+
+```json
+{
+  "mcpServers": {
+    "nearby": {
+      "command": "uv",
+      "args": ["run", "--project", "/path/to/code-nearby/repo", "nearby-mcp"]
+    }
+  }
+}
+```
+
+Or use the CLI to pre-build the index:
 
 ```bash
-uv sync --extra dev   # Install dev dependencies (pytest, ruff)
-uv run pytest         # Run tests
-uv run ruff check .   # Lint code
+nearby analyze .
 ```
 
-## 🏗️ Architecture
+### 3. Start Chatting
 
-- **TUI**: `src/brain/tui.py` - Textual-based interface
-- **CLI**: `src/brain/cli.py` - Typer-based commands
-- **Analyzer**: `src/brain/analyzer.py` - AST-based code analysis
-- **Storage**: `src/brain/storage.py` - Knowledge base I/O
-- **FS Utils**: `src/brain/fs_utils.py` - File system discovery
+Your LLM can now:
+- `nearby_search` — find symbols, APIs, keywords in your codebase
+- `nearby_file_info` — list all symbols in a file
+- `nearby_project_symbols` — browse the project symbol tree
+- `nearby_module_context` — see what a module imports and connects to
+- `nearby_status` — check index health
 
-See [AGENTS.md](./AGENTS.md) for engineering guidelines.
+## MCP Tools
 
-## 🎨 Technology Stack
+| Tool | Description |
+|------|-------------|
+| `nearby_search` | BM25 + trigram code search with language/path filters |
+| `nearby_file_info` | List symbols (functions, classes) in a file |
+| `nearby_project_symbols` | Project-wide symbol summary |
+| `nearby_module_context` | Dependency context for a module |
+| `nearby_status` | Index status & statistics |
 
-- **CLI Framework**: [Typer](https://typer.tiangolo.com/)
-- **TUI Framework**: [Textual](https://textual.textualize.io/)
-- **Analysis**: Python `ast` module
-- **Knowledge Base**: RAG (SQLite FTS5)
+## CLI (Optional)
 
-## 🗺️ Roadmap
+A minimal CLI is included for convenience:
 
-- [x] Python AST analysis
-- [x] Incremental updates
-- [x] Auto-sync to knowledge base repository
-- [x] Multi-language support (tree-sitter)
-- [ ] Function call graph
-- [ ] MCP Skills for LLMs
-- [ ] Semantic search
+```bash
+nearby              # Show help
+nearby analyze .    # Build/reindex the current project
+nearby status       # Show knowledge base path
+```
 
-## 📄 License
+## How It Works
+
+```
+Your Project          Code Nearby               MCP Client
+───────────          ────────────              ──────────
+src/                  ~/.nearby/                Claude Code
+├── auth.py  ──▶      └── your-project/          VS Code
+├── api.py   ──▶          ├── _GRAPH.json        Cursor
+└── db.py    ──▶          └── .rag/
+                              └── index.sqlite3
+                            ▲
+                    watchdog │ (auto-update)
+```
+
+1. `nearby analyze .` — AST parsing (tree-sitter) → chunks → SQLite FTS5 index + dependency graph
+2. File watcher keeps the index in sync automatically
+3. MCP tools query the index with BM25 + trigram hybrid search, RRF fusion, and graph-aware ranking
+
+## Supported Languages
+
+Python, JavaScript, TypeScript, Go, Rust, Java (via tree-sitter grammars).
+
+## License
 
 MIT
-
-## 🤝 Contributing
-
-Built with [Typer](https://typer.tiangolo.com/) and [Textual](https://textual.textualize.io/).
-
-Contributions welcome! See [AGENTS.md](./AGENTS.md) for guidelines.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import ClassVar
 
 from textual.app import App, ComposeResult
 from textual.containers import ScrollableContainer, Vertical
@@ -10,14 +11,14 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Button, Footer, Header, Input, Label, Static
 
-from brain import config
-from brain.operations.config import clear_config
+from code_nearby import config
+from code_nearby.operations.config import clear_config
 
 
 class ConfirmDialog(ModalScreen):
     """确认对话框。"""
 
-    BINDINGS = [("escape", "dismiss", "Cancel")]
+    BINDINGS: ClassVar = [("escape", "dismiss", "Cancel")]
 
     def __init__(self, message: str) -> None:
         super().__init__()
@@ -32,7 +33,7 @@ class ConfirmDialog(ModalScreen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.dismiss(event.button.id == "confirm")
 
-    def action_dismiss(self) -> None:
+    def action_dismiss(self, result: bool | None = None) -> None:  # type: ignore[override]
         """处理 Escape 键。"""
         self.dismiss(False)
 
@@ -105,7 +106,7 @@ class BrainApp(App):
     .err { color: $error; }
     """
 
-    BINDINGS = [
+    BINDINGS: ClassVar = [
         ("q", "quit", "Quit"),
         ("escape", "blur", "Unfocus"),
     ]
@@ -151,8 +152,8 @@ class BrainApp(App):
             Static("📁 Knowledge Base", classes="section"),
             Label(str(kb_path)),
             Static("", classes="section"),
-            Static("💡 Run 'brain analyze <project>' to build a search index.", classes="section"),
-            Static("   'brain search <query>' to query the index."),
+            Static("💡 Run 'nearby analyze <project>' to build a search index.", classes="section"),
+            Static("   'nearby search <query>' to query the index."),
             Button("⚙️ Change KB Path", id="change_path"),
             Button("🔄 Reset to Default", id="reset", variant="error"),
         )
@@ -176,7 +177,7 @@ class BrainApp(App):
             self._handle_change_path()
         elif btn_id == "reset":
             self.push_screen(
-                ConfirmDialog("⚠️ Reset KB path to default (~/.brain)?"),
+                ConfirmDialog("⚠️ Reset KB path to default (~/.nearby)?"),
                 self._handle_reset,
             )
 
@@ -201,7 +202,7 @@ class BrainApp(App):
         self._refresh()
         self._set_status(f"✓ KB path updated: {path}")
 
-    def _handle_reset(self, confirmed: bool) -> None:
+    def _handle_reset(self, confirmed: object) -> None:
         """重置 KB 路径为默认值。"""
         if not confirmed:
             return
@@ -213,12 +214,12 @@ class BrainApp(App):
 class _PathInputDialog(ModalScreen):
     """KB 路径输入对话框。"""
 
-    BINDINGS = [("escape", "dismiss", "Cancel")]
+    BINDINGS: ClassVar = [("escape", "dismiss", "Cancel")]
 
     def compose(self) -> ComposeResult:
         with Vertical(id="dialog"):
             yield Static("Enter new knowledge base path:")
-            yield Input(placeholder=str(Path.home() / ".brain"), id="kb_path_input")
+            yield Input(placeholder=str(Path.home() / ".nearby"), id="kb_path_input")
             yield Button("✓ Save", id="save", variant="primary")
             yield Button("✗ Cancel", id="cancel")
 
@@ -229,7 +230,7 @@ class _PathInputDialog(ModalScreen):
         else:
             self.dismiss(None)
 
-    def action_dismiss(self) -> None:
+    def action_dismiss(self, result: object = None) -> None:  # type: ignore[override]
         """处理 Escape 键。"""
         self.dismiss(None)
 

@@ -3,8 +3,8 @@
 请直接导入子模块：
 
 配置管理：
-    from brain.operations.config import clear_config
+    from code_nearby.operations.config import clear_config
 
 分析入口：
-    from brain.operations.analysis import run_full_analysis
+    from code_nearby.operations.analysis import run_full_analysis
 """

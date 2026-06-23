@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from brain.rag.chunker import chunk_file
-from brain.rag.index import RagIndex
-from brain.rag.retrieve import (
+from code_nearby.rag.chunker import chunk_file
+from code_nearby.rag.index import RagIndex
+from code_nearby.rag.retrieve import (
     GRAPH_BOOST,
     ScoredChunk,
     apply_graph_boost,
@@ -16,8 +16,8 @@ from brain.rag.retrieve import (
     rrf_fuse,
     search,
 )
-from brain.rag.schema import Chunk
-from brain.rag.synonyms import expand_query
+from code_nearby.rag.schema import Chunk
+from code_nearby.rag.synonyms import expand_query
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "sample_pkg"
 

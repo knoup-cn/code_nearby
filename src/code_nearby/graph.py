@@ -9,9 +9,10 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from brain.rag.index import RagIndex
+if TYPE_CHECKING:
+    from code_nearby.rag.index import RagIndex
 
 
 def generate_graph(index: RagIndex, project_name: str) -> dict[str, Any]:
@@ -41,7 +42,8 @@ def generate_graph(index: RagIndex, project_name: str) -> dict[str, Any]:
 
     # 第一遍：module chunk → 模块节点
     module_rows = conn.execute(
-        "SELECT file_path, language, imports, content FROM chunks WHERE chunk_type = 'module'"
+        "SELECT file_path, language, imports, start_line, end_line "
+        "FROM chunks WHERE chunk_type = 'module'"
     ).fetchall()
 
     for row in module_rows:
@@ -51,7 +53,7 @@ def generate_graph(index: RagIndex, project_name: str) -> dict[str, Any]:
             "md_path": "",
             "source_path": row["file_path"],
             "exports": [],
-            "lines_of_code": row["content"].count("\n") + 1,
+            "lines_of_code": row["end_line"] - row["start_line"] + 1,
         }
 
     # 第二遍：function / class chunk → 符号节点 + 填充模块 exports
@@ -85,11 +87,8 @@ def generate_graph(index: RagIndex, project_name: str) -> dict[str, Any]:
 
     for row in module_rows:
         module_name = _file_path_to_module(row["file_path"])
-        imports_raw = row["imports"] or ""
-        for imp in imports_raw.split("\n"):
-            imp = imp.strip()
-            if not imp:
-                continue
+        imports_raw = row["imports"] or "[]"
+        for imp in json.loads(imports_raw):
             dep_module = _resolve_import(imp, module_names)
             if dep_module and dep_module != module_name:
                 edge = {
@@ -136,12 +135,12 @@ def save_graph(graph: dict[str, Any], kb_path: Path) -> Path:
 def _file_path_to_module(file_path: str) -> str:
     """将仓库相对路径转换为点分模块名。
 
-    ``src/brain/analyzer.py`` → ``brain.analyzer``
+    ``src/code_nearby/analyzer.py`` → ``code_nearby.analyzer``
     ``lib/utils/helpers.go`` → ``utils.helpers``
     ``app/components/Button.tsx`` → ``components.Button``
     """
     path = Path(file_path)
-    parts = list(path.parts[:-1]) + [path.stem]
+    parts = [*list(path.parts[:-1]), path.stem]
     if parts and parts[0] in ("src", "lib", "app", "pkg"):
         parts = parts[1:]
     return ".".join(parts)
@@ -152,14 +151,14 @@ def _resolve_dependency(dep_name: str, module_names: set[str]) -> str | None:
 
     Import 依赖始终指向模块，因此解析限定在模块节点范围内。
     这防止了与恰好共享依赖叶子名的符号冲突（例如 CLI 命令 ``context``
-    和 ``brain.context`` 模块）。
+    和 ``code_nearby.context`` 模块）。
 
     Args:
-        dep_name: 依赖名（如 "storage" 或 "brain.storage"）
+        dep_name: 依赖名（如 "storage" 或 "code_nearby.storage"）
         module_names: 图中所有模块名的集合
 
     Returns:
-        完整模块名（如 "brain.storage"）或 None
+        完整模块名（如 "code_nearby.storage"）或 None
     """
     # 精确匹配优先
     if dep_name in module_names:

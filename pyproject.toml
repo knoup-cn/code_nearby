@@ -3,16 +3,16 @@ requires = ["hatchling>=1.26"]
 build-backend = "hatchling.build"
 
 [project]
-name = "brain"
+name = "code-nearby"
 version = "0.1.0"
-description = "Code knowledge base — RAG indexing + dependency graph for source directories."
+description = "Code Nearby — MCP server that provides LLMs with rich codebase context via RAG indexing and dependency graphs."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "MIT"
 authors = [
   { name = "Knoup" },
 ]
-keywords = ["cli", "code-search", "rag", "knowledge-base"]
+keywords = ["cli", "mcp-server", "code-context", "nearby"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Environment :: Console",
@@ -31,26 +31,31 @@ dependencies = [
   "tree-sitter-go>=0.25.0",
   "tree-sitter-rust>=0.24.2",
   "tree-sitter-java>=0.23.5",
+  "pathspec>=0.12",
   "pyyaml>=6.0.3",
 ]
 
 [project.optional-dependencies]
 dev = [
   "pytest>=8.0",
+  "pytest-cov>=5.0",
   "ruff>=0.11",
+  "mypy>=1.14",
 ]
 embed = [
   "fastembed>=0.4",
 ]
 mcp = [
+  "mcp>=1.0",
   "watchdog>=4.0",
 ]
 
 [project.scripts]
-brain = "brain.cli:main"
+nearby = "code_nearby.cli:main"
+nearby-mcp = "code_nearby.mcp_server:run"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/brain"]
+packages = ["src/code_nearby"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -62,4 +67,58 @@ src = ["src", "tests"]
 extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP"]
+select = [
+  "E", "F", "I",   # pyflakes + isort + pycodestyle
+  "B",              # flake8-bugbear
+  "UP",             # pyupgrade
+  "SIM",            # flake8-simplify
+  "C4",             # flake8-comprehensions
+  "RUF",            # ruff-specific
+  "TCH",            # flake8-type-checking
+  "PT",             # flake8-pytest-style
+]
+ignore = [
+  "RUF002",  # 中文文档使用全角标点是故意的
+  "RUF003",  # 中文注释使用全角标点是故意的
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["code_nearby"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+# Packages without type stubs or with dynamic imports.
+[[tool.mypy.overrides]]
+module = [
+  "tree_sitter.*",
+  "watchdog.*",
+  "fastembed.*",
+  "numpy.*",
+  "tiktoken.*",
+  "yaml.*",
+]
+ignore_missing_imports = true
+
+[tool.coverage.run]
+source = ["src/code_nearby"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_also = [
+  "def __repr__",
+  "if TYPE_CHECKING:",
+  "raise NotImplementedError",
+  "if __name__ == .__main__.:",
+  "@(abc\\.)?abstractmethod",
+]

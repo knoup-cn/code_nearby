@@ -5,15 +5,18 @@ from __future__ import annotations
 import importlib
 import re
 import textwrap
-from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
-from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
 
 from tree_sitter import Language, Node, Parser
 
-from brain.lang_config import (  # 内部使用
-    LanguageConfig,  # noqa: F401  类型标注用
+from code_nearby.lang_config import (  # 内部使用
+    LanguageConfig,
     get_config,
 )
 
@@ -36,6 +39,128 @@ class SymbolInfo:
     end_line: int  # 1-indexed
     is_private: bool
     is_async: bool
+
+
+# ======================================================================
+# 函数体物理分解——将超大函数按 CST 控制流边界拆分为 StatementBlock
+# ======================================================================
+
+# 跨语言复合语句类型名（会形成块边界的节点类型）
+_COMPOUND_TYPES = frozenset({
+    "if_statement",
+    "if_expression",
+    "for_statement",
+    "for_expression",
+    "for_in_statement",
+    "enhanced_for_statement",
+    "while_statement",
+    "while_expression",
+    "loop_expression",
+    "try_statement",
+    "try_expression",
+    "with_statement",
+    "with_expression",
+    "match_statement",
+    "match_expression",
+    "switch_statement",
+    "switch_expression",
+    "expression_switch_statement",
+    "type_switch_statement",
+    "select_statement",
+})
+
+# 复合语句类型 → 人类可读标签（英文，供 LLM 消费）
+_BLOCK_LABELS: dict[str, str] = {
+    "if_statement": "conditional",
+    "if_expression": "conditional",
+    "for_statement": "loop",
+    "for_expression": "loop",
+    "for_in_statement": "loop",
+    "enhanced_for_statement": "loop",
+    "while_statement": "loop",
+    "while_expression": "loop",
+    "loop_expression": "loop",
+    "try_statement": "error handling",
+    "try_expression": "error handling",
+    "with_statement": "resource",
+    "with_expression": "resource",
+    "match_statement": "pattern match",
+    "match_expression": "pattern match",
+    "switch_statement": "switch",
+    "switch_expression": "switch",
+    "expression_switch_statement": "switch",
+    "type_switch_statement": "switch",
+    "select_statement": "select",
+}
+
+
+def _label(node_type: str) -> str:
+    return _BLOCK_LABELS.get(node_type, "logic")
+
+
+@dataclass(frozen=True, slots=True)
+class StatementBlock:
+    """函数体内的一个逻辑代码块——物理分解结果。
+
+    复合语句（if/for/try 等）自成一块；连续的简单语句合并为一块。
+    """
+
+    index: int  # 0-based 块序号
+    start_line: int  # 1-indexed
+    end_line: int  # 1-indexed
+    nodes: tuple[Node, ...]  # 块内 CST 节点，保持顺序
+    label: str  # 人类可读描述
+    total: int = field(default=1, compare=False, repr=False)  # 总块数
+
+
+def decompose_function_body(body_node: Node) -> list[StatementBlock]:
+    """将函数体按复合语句边界拆分为 :class:`StatementBlock` 列表。
+
+    遍历 body 的直接子节点：
+    - ``if``/``for``/``while``/``try``/``with``/``match``/``switch`` 等 → 自成一块
+    - 连续的 ``expression_statement``/``return``/``assignment`` 等 → 合并为一块
+
+    返回空列表表示 body 为空或不存在。
+    """
+    if body_node is None:
+        return []
+
+    children = list(body_node.named_children)
+    if not children:
+        return []
+
+    blocks: list[StatementBlock] = []
+    pending: list[Node] = []
+
+    for child in children:
+        if child.type in _COMPOUND_TYPES:
+            if pending:
+                blocks.append(_make_block(len(blocks), pending))
+                pending = []
+            blocks.append(_make_block(len(blocks), [child]))
+        else:
+            pending.append(child)
+
+    if pending:
+        blocks.append(_make_block(len(blocks), pending))
+
+    # 回填 total
+    return [StatementBlock(b.index, b.start_line, b.end_line, b.nodes, b.label, len(blocks))
+            for b in blocks]
+
+
+def _make_block(index: int, nodes: list[Node]) -> StatementBlock:
+    start_line = nodes[0].start_point[0] + 1
+    end_line = nodes[-1].end_point[0] + 1
+    label = _label(nodes[0].type) if len(nodes) == 1 else "logic"
+    return StatementBlock(
+        index=index,
+        start_line=start_line,
+        end_line=end_line,
+        nodes=tuple(nodes),
+        label=label,
+        total=0,  # 暂时占位，外层回填
+    )
 
 
 def walk_symbols(
@@ -168,7 +293,6 @@ def is_async_def(node: Node) -> bool:
     return any(child.type == "async" for child in node.children)
 
 
-
 # ======================================================================
 # 装饰器处理
 # ======================================================================
@@ -289,7 +413,12 @@ def _collect_python_imports(src: bytes, root: Node) -> tuple[str, ...]:
                     names.append(dotted)
     # 去重，保持顺序
     seen: set[str] = set()
-    return tuple(n for n in names if not (n in seen or seen.add(n)))
+    result: list[str] = []
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            result.append(name)
+    return tuple(result)
 
 
 def dotted_name(src: bytes, node: Node) -> str:

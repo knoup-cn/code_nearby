@@ -3,7 +3,7 @@
 监听项目目录的文件变更（创建/修改/删除），自动触发受影响文件
 的 chunk 重建与索引更新，保持索引与磁盘实时同步。
 
-可作为独立 daemon（``brain watch``）或嵌入 MCP server。
+可作为独立 daemon（``nearby watch``）或嵌入 MCP server。
 """
 
 from __future__ import annotations
@@ -20,11 +20,11 @@ from watchdog.events import (
 from watchdog.observers import Observer
 from watchdog.observers.polling import PollingObserver
 
-from brain import fs_utils, graph, storage
-from brain.lang_config import LANGUAGES_BY_SUFFIX
-from brain.rag import chunker
-from brain.rag.index import RagIndex
-from brain.tree_sitter_utils import relative_path
+from code_nearby import fs_utils, graph, storage
+from code_nearby.lang_config import LANGUAGES_BY_SUFFIX
+from code_nearby.rag import chunker
+from code_nearby.rag.index import RagIndex
+from code_nearby.tree_sitter_utils import relative_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -224,9 +224,9 @@ def watch_project(
     Returns:
         已启动的 watchdog Observer
     """
-    from brain import config as brain_config
+    from code_nearby import config as nearby_config
 
-    kb_path = brain_config.get_kb_path()
+    kb_path = nearby_config.get_kb_path()
     project_kb_path = storage.ensure_project_kb_path(kb_path, project_path)
     rag_dir = project_kb_path / ".rag"
     rag_dir.mkdir(parents=True, exist_ok=True)
@@ -237,7 +237,7 @@ def watch_project(
     # 如果没有索引，先做一次全量构建
     if AUTO_INITIAL_INDEX and idx.count() == 0:
         logger.info("watch: no index found, running initial full build...")
-        from brain.operations.analysis import run_full_analysis
+        from code_nearby.operations.analysis import run_full_analysis
 
         run_full_analysis(project_path)
         # 重新打开（run_full_analysis 已经 close 了）
@@ -252,11 +252,11 @@ def watch_project(
     observer.start()
 
     # 将 main loop 方法附加到 observer 上，供调用方使用
-    observer._brain_handler = handler  # type: ignore[attr-defined]
-    observer._brain_index = idx  # type: ignore[attr-defined]
-    observer._brain_kb_path = project_kb_path  # type: ignore[attr-defined]
-    observer._brain_project_name = project_name  # type: ignore[attr-defined]
-    observer._brain_rag_dir = rag_dir  # type: ignore[attr-defined]
+    observer._nearby_handler = handler  # type: ignore[attr-defined]
+    observer._nearby_index = idx  # type: ignore[attr-defined]
+    observer._nearby_kb_path = project_kb_path  # type: ignore[attr-defined]
+    observer._nearby_project_name = project_name  # type: ignore[attr-defined]
+    observer._nearby_rag_dir = rag_dir  # type: ignore[attr-defined]
 
     return observer
 
@@ -268,15 +268,15 @@ def watch_loop(
     interval: float = 1.0,
     on_indexed: Callable[[str, int], None] | None = None,
 ) -> None:
-    """启动文件监听并进入阻塞主循环（供 ``brain watch`` CLI 使用）。
+    """启动文件监听并进入阻塞主循环（供 ``nearby watch`` CLI 使用）。
 
     按 Ctrl+C 优雅退出。
     """
     observer = watch_project(project_path, poll=poll, on_indexed=on_indexed)
-    handler = observer._brain_handler
-    idx = observer._brain_index
-    kb_path = observer._brain_kb_path
-    project_name = observer._brain_project_name
+    handler = observer._nearby_handler
+    idx = observer._nearby_index
+    kb_path = observer._nearby_kb_path
+    project_name = observer._nearby_project_name
 
     logger.info("watching %s (poll=%s)...", project_path, poll)
     try:

@@ -1,4 +1,4 @@
-"""Brain — 代码分析与本地 RAG context engine。
+"""Code Nearby — 代码分析与本地 RAG context engine。
 
 提供两个核心函数：
 
@@ -7,9 +7,9 @@
 
 Usage::
 
-    import brain
-    brain.analyze("/path/to/project")
-    results = brain.search("verify token", max_results=3)
+    import code_nearby
+    code_nearby.analyze("/path/to/project")
+    results = code_nearby.search("verify token", max_results=3)
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ __version__ = "0.1.0"
 def analyze(project_path: str | Path = ".", *, full: bool = False) -> dict[str, Any]:
     """分析源码仓库，产出 RAG 索引 + 依赖图。
 
-    这是程序化入口，等价于 CLI 的 ``brain analyze .``。
+    这是程序化入口，等价于 CLI 的 ``nearby analyze .``。
 
     Args:
         project_path: 源项目路径，默认当前目录。
@@ -35,6 +35,7 @@ def analyze(project_path: str | Path = ".", *, full: bool = False) -> dict[str, 
             "success": bool,
             "files_analyzed": int,
             "added": int, "modified": int, "deleted": int,
+            "chunks_added": int, "chunks_updated": int, "chunks_deleted": int,
             "chunks_total": int,
             "kb_path": str | None,
             "error": str | None,
@@ -43,7 +44,7 @@ def analyze(project_path: str | Path = ".", *, full: bool = False) -> dict[str, 
     Raises:
         FileNotFoundError: project_path 不存在。
     """
-    from brain.operations.analysis import run_full_analysis
+    from code_nearby.operations.analysis import run_full_analysis
 
     target = Path(project_path).resolve()
     if not target.exists():
@@ -59,7 +60,7 @@ def search(
     language: str | None = None,
     path_glob: str | None = None,
     budget: int | None = None,
-    kb_name: str | None = None,
+    window_strategy: str = "moderate",
 ) -> dict[str, Any]:
     """检索 RAG 索引，返回 token 预算感知的结构化代码片段。
 
@@ -70,7 +71,6 @@ def search(
         language: 按语言过滤（如 ``"python"``）。
         path_glob: 按文件路径 glob 过滤（如 ``"src/**/*.py"``）。
         budget: token 预算上限（None = 不限制）。
-        kb_name: 知识库名称（需与 analyze 时的 ``--kb-name`` 一致）。
 
     Returns:
         {
@@ -91,19 +91,19 @@ def search(
     Raises:
         RuntimeError: 搜索索引未初始化。
     """
-    from brain import config, storage
-    from brain.rag import assemble, retrieve
-    from brain.rag.index import RagIndex
+    from code_nearby import config, storage
+    from code_nearby.rag import assemble, retrieve
+    from code_nearby.rag.index import RagIndex
 
     kb_path = config.get_kb_path()
     target = Path(project_path).resolve()
-    project_kb_path = storage.get_project_kb_path(kb_path, target, kb_name=kb_name)
+    project_kb_path = storage.get_project_kb_path(kb_path, target)
     index_file = project_kb_path / ".rag" / "index.sqlite3" if project_kb_path else None
 
     if index_file is None or not index_file.exists():
         raise RuntimeError(
             f"No search index for project: {target.name}. "
-            "Run brain.analyze() or 'brain analyze' first."
+            "Run code_nearby.analyze() or 'nearby analyze' first."
         )
 
     idx = RagIndex.open(index_file)
@@ -116,6 +116,12 @@ def search(
             path_glob=path_glob,
             graph=retrieve.load_graph(project_kb_path) if project_kb_path else None,
         )
-        return assemble.assemble(query, scored, budget=budget)
+        return assemble.assemble(
+            query,
+            scored,
+            budget=budget,
+            project_root=target,
+            window_strategy=window_strategy,
+        )
     finally:
         idx.close()

@@ -6,6 +6,6 @@
 
 from __future__ import annotations
 
-from brain.rag.synonyms import expand_query, is_embed_available, load_custom_synonyms
+from code_nearby.rag.synonyms import expand_query, is_embed_available, load_custom_synonyms
 
 __all__ = ["expand_query", "is_embed_available", "load_custom_synonyms"]

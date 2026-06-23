@@ -9,11 +9,11 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from brain import cli, config
-from brain.rag.assemble import assemble, chunk_tokens
-from brain.rag.chunker import chunk_file
-from brain.rag.index import RagIndex
-from brain.rag.retrieve import ScoredChunk, search
+from code_nearby import cli, config
+from code_nearby.rag.assemble import assemble, chunk_tokens
+from code_nearby.rag.chunker import chunk_file
+from code_nearby.rag.index import RagIndex
+from code_nearby.rag.retrieve import ScoredChunk, search
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "sample_pkg"
 runner = CliRunner()
@@ -31,24 +31,44 @@ def index(tmp_path: Path) -> RagIndex:
 
 
 def test_payload_shape_and_citation(index: RagIndex) -> None:
-    payload = assemble("fetch remote url", search(index, "fetch remote url", k=3))
+    payload = assemble(
+        "fetch remote url",
+        search(index, "fetch remote url", k=3),
+        project_root=FIXTURE_ROOT,
+    )
     assert payload["query"] == "fetch remote url"
     assert payload["results"]
     top = payload["results"][0]
     assert top["rank"] == 1
     assert top["ref"].startswith("repository.py:")
-    # ref line must equal the chunk's start line (the "lines" range start)
-    assert top["ref"].split(":")[1] == top["lines"].split("-")[0]
+    # ref 指向原始 chunk 起始行，lines 显示窗口扩展后的实际范围
     assert top["type"] in {"function", "method", "class", "module"}
     assert "def fetch_remote" in top["content"]
+    assert "context_window" in top
 
 
 def test_token_budget_trims_and_flags(index: RagIndex) -> None:
     results = search(index, "self root widget repository load", k=8)
     assert len(results) >= 2
-    # budget that admits only the first chunk
-    first_cost = chunk_tokens(results[0].chunk)
-    payload = assemble("q", results, budget=first_cost)
+    # budget that admits only the first chunk (using actual content from disk)
+    first_chunk = results[0].chunk
+    from code_nearby.rag.source_fetch import fetch_source
+
+    snippet = fetch_source(
+        FIXTURE_ROOT,
+        first_chunk.file_path,
+        first_chunk.start_line,
+        first_chunk.end_line,
+    )
+    assert snippet is not None
+    first_cost = chunk_tokens(first_chunk, content=snippet.content)
+    payload = assemble(
+        "q",
+        results,
+        budget=first_cost,
+        project_root=FIXTURE_ROOT,
+        window_strategy="none",
+    )
     assert len(payload["results"]) == 1
     assert payload["truncated"] is True
     assert payload["token_estimate"] <= first_cost
@@ -56,7 +76,7 @@ def test_token_budget_trims_and_flags(index: RagIndex) -> None:
 
 def test_no_budget_keeps_all(index: RagIndex) -> None:
     results = search(index, "self", k=5)
-    payload = assemble("q", results, budget=None)
+    payload = assemble("q", results, budget=None, project_root=FIXTURE_ROOT)
     assert len(payload["results"]) == len(results)
     assert payload["truncated"] is False
 
@@ -109,7 +129,7 @@ def wired_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     kb = tmp_path / "kb"
     kb.mkdir()
     monkeypatch.setattr(config, "load_config", lambda: {"local_path": str(kb)})
-    # cli.operations and brain.storage both read config via the same module
+    # cli.operations and code_nearby.storage both read config via the same module
     monkeypatch.chdir(repo)
     return repo
 
@@ -123,7 +143,8 @@ def test_cli_analyze_then_search_json(wired_project: Path) -> None:
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["results"][0]["qualified_name"] == "verify_token"
-    assert payload["results"][0]["ref"] == "pkg/auth.py:4"
+    # ref 指向原始 chunk 起始行
+    assert payload["results"][0]["ref"].startswith("pkg/auth.py:")
     assert "def verify_token" in payload["results"][0]["content"]
 
 

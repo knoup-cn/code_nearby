@@ -1,16 +1,16 @@
-"""Brain MCP Server — 将 brain 代码检索引擎暴露为 LLM 可调用的 MCP 工具。
+"""Code Nearby MCP Server — 将 Code Nearby 代码检索引擎暴露为 LLM 可调用的 MCP 工具。
 
 基于 Model Context Protocol (MCP) 的 stdio 传输，提供代码搜索、
 文件概览、项目符号索引和模块上下文扩展等工具。
 
 启动时自动拉起 watchdog 实时监听文件变更并增量更新索引，
-无需额外运行 ``brain watch``。可通过环境变量 ``BRAIN_WATCHDOG=0`` 禁用。
+无需额外运行 ``nearby watch``。可通过环境变量 ``NEARBY_WATCHDOG=0`` 禁用。
 
 Usage::
 
-    uv run brain-mcp [--project /path/to/project]
+    uv run nearby-mcp [--project /path/to/project]
     # 或
-    python -m brain.mcp_server [--project /path/to/project]
+    python -m code_nearby.mcp_server [--project /path/to/project]
 
 跨项目配置 —— 推荐方式：
 
@@ -20,14 +20,14 @@ Usage::
 
     {
       "mcpServers": {
-        "brain": {
+        "nearby": {
           "command": "uv",
-          "args": ["run", "--project", "/path/to/brain/repo", "brain-mcp"]
+          "args": ["run", "--project", "/path/to/code-nearby/repo", "nearby-mcp"]
         }
       }
     }
 
-Claude Code 会自动将 ``cwd`` 设为该项目的根目录，brain 就能索引该项目。
+Claude Code 会自动将 ``cwd`` 设为该项目的根目录，code_nearby 就能索引该项目。
 
 **方案 2：全局配置 + cwd 指定**
 
@@ -35,9 +35,9 @@ Claude Code 会自动将 ``cwd`` 设为该项目的根目录，brain 就能索�
 
     {
       "mcpServers": {
-        "brain": {
+        "nearby": {
           "command": "uv",
-          "args": ["run", "--project", "/path/to/brain/repo", "brain-mcp"],
+          "args": ["run", "--project", "/path/to/code-nearby/repo", "nearby-mcp"],
           "cwd": "/path/to/target/project"
         }
       }
@@ -59,14 +59,14 @@ import mcp.types as types
 from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
-from brain import config, storage
-from brain.rag import assemble, retrieve
-from brain.rag.context import expand_module_context, load_context_graph
-from brain.rag.index import OldSchemaError, RagIndex
+from code_nearby import config, storage
+from code_nearby.rag import assemble, retrieve
+from code_nearby.rag.context import expand_module_context, load_context_graph
+from code_nearby.rag.index import OldSchemaError, RagIndex
 
 logger = logging.getLogger(__name__)
 
-server = Server("brain")
+server = Server("nearby")
 
 # =============================================================================
 # watchdog 集成 —— 实时增量索引
@@ -81,7 +81,7 @@ _watch_project_root: Path | None = None
 
 _WATCHDOG_AVAILABLE = False
 try:
-    from brain.watch import watch_project
+    from code_nearby.watch import watch_project
 
     _WATCHDOG_AVAILABLE = True
 except ImportError:
@@ -90,7 +90,7 @@ except ImportError:
 
 def _watchdog_disabled() -> bool:
     """检查环境变量是否显式禁用 watchdog。"""
-    return os.environ.get("BRAIN_WATCHDOG", "").strip() == "0"
+    return os.environ.get("NEARBY_WATCHDOG", "").strip() == "0"
 
 
 def _start_watchdog(project_path: Path) -> None:
@@ -101,10 +101,10 @@ def _start_watchdog(project_path: Path) -> None:
     _watch_project_root = project_path
     observer = watch_project(project_path)
     _watch_observer = observer
-    _watch_handler = observer._brain_handler
-    _watch_index = observer._brain_index
-    _watch_kb_path = observer._brain_kb_path
-    _watch_project_name = observer._brain_project_name
+    _watch_handler = observer._nearby_handler
+    _watch_index = observer._nearby_index
+    _watch_kb_path = observer._nearby_kb_path
+    _watch_project_name = observer._nearby_project_name
 
     logger.info(
         "mcp: watchdog started — %d files, %d chunks",
@@ -186,7 +186,7 @@ def _get_index(project_path: Path) -> tuple[RagIndex, Path]:
         return _watch_index, _watch_kb_path
 
     # 回退：独立打开索引
-    from brain.operations.analysis import run_full_analysis
+    from code_nearby.operations.analysis import run_full_analysis
 
     kb_path = config.get_kb_path()
     project_kb_path = storage.get_project_kb_path(kb_path, project_path)
@@ -234,7 +234,7 @@ def _chunk_to_text(chunk_dict: dict[str, Any]) -> str:
 async def handle_list_tools() -> list[types.Tool]:
     return [
         types.Tool(
-            name="brain_search",
+            name="nearby_search",
             description=(
                 "Search code in the project using BM25 + trigram lexical retrieval. "
                 "Best for finding exact symbols (function names, class names), API usage, "
@@ -275,7 +275,7 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="brain_file_info",
+            name="nearby_file_info",
             description=(
                 "List all symbols (functions, classes, methods) in a specific file. "
                 "Use this to understand a file's structure before diving into specific symbols."
@@ -296,7 +296,7 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="brain_project_symbols",
+            name="nearby_project_symbols",
             description=(
                 "Get a project-wide summary of all top-level symbols (functions, classes) "
                 "with their file locations. Use for project orientation, finding entry points, "
@@ -317,11 +317,11 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="brain_module_context",
+            name="nearby_module_context",
             description=(
                 "Given a file path, return the dependency context: which modules it imports, "
                 "and key symbols from those dependent modules. Uses the dependency graph "
-                "generated during 'brain analyze'. Essential for understanding module dependencies."
+                "generated during 'nearby analyze'. Essential for understanding module dependencies."
             ),
             inputSchema={
                 "type": "object",
@@ -339,9 +339,9 @@ async def handle_list_tools() -> list[types.Tool]:
             },
         ),
         types.Tool(
-            name="brain_status",
+            name="nearby_status",
             description=(
-                "Show brain index status for the current project: number of indexed chunks, "
+                "Show nearby index status for the current project: number of indexed chunks, "
                 "files tracked, and knowledge base location."
             ),
             inputSchema={
@@ -361,15 +361,15 @@ async def handle_list_tools() -> list[types.Tool]:
 async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[types.TextContent]:
     project_root = _resolve_project(arguments.get("project"))
 
-    if name == "brain_search":
+    if name == "nearby_search":
         return await _search(arguments, project_root)
-    elif name == "brain_file_info":
+    elif name == "nearby_file_info":
         return await _file_info(arguments, project_root)
-    elif name == "brain_project_symbols":
+    elif name == "nearby_project_symbols":
         return await _project_symbols(arguments, project_root)
-    elif name == "brain_module_context":
+    elif name == "nearby_module_context":
         return await _module_context(arguments, project_root)
-    elif name == "brain_status":
+    elif name == "nearby_status":
         return await _status(project_root)
     else:
         return [types.TextContent(type="text", text=f"Unknown tool: {name}")]
@@ -518,11 +518,11 @@ async def _module_context(args: dict[str, Any], project_root: Path) -> list[type
             return [
                 types.TextContent(
                     type="text",
-                    text="No dependency graph found. Run 'brain analyze' first.",
+                    text="No dependency graph found. Run 'nearby analyze' first.",
                 )
             ]
 
-        from brain.rag.context import graph_module_name
+        from code_nearby.rag.context import graph_module_name
 
         module_name = graph_module_name(graph, file_path)
         imports = idx.get_file_imports(file_path)
@@ -598,13 +598,13 @@ async def _status(project_root: Path) -> list[types.TextContent]:
         except OldSchemaError:
             status_line = (
                 f"**Project**: {project_root.name}\n"
-                f"**Status**: Old index schema — run 'brain analyze --full' to rebuild\n"
+                f"**Status**: Old index schema — run 'nearby analyze --full' to rebuild\n"
                 f"**KB path**: {project_kb_path}"
             )
     else:
         status_line = (
             f"**Project**: {project_root.name}\n"
-            f"**Status**: No index — run 'brain analyze' first\n"
+            f"**Status**: No index — run 'nearby analyze' first\n"
             f"**KB path**: {project_kb_path}"
         )
 
