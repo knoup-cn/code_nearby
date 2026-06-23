@@ -14,34 +14,42 @@ LLMs are powerful but blind to your codebase. You end up explaining architecture
 
 ## Quick Start
 
-### 1. Install
+### 1. 一键安装
+
+```bash
+git clone https://github.com/knoup-cn/code_nearby.git && cd code_nearby && bash setup.sh
+```
+
+**零前置依赖** — 脚本自动安装 uv → 拉取 Python 3.12 → 同步依赖 → 输出 MCP 客户端配置。只需 bash + 网络即可。
+
+> 手动安装见下方。
+
+### 2. 配置 MCP 客户端
+
+将 `setup.sh` 输出的 JSON 配置块粘贴进去：
+
+| 客户端 | 配置文件 |
+|--------|----------|
+| Claude Code | `~/.claude/settings.json` 或 `<project>/.claude/settings.json` |
+| VS Code / Cursor | `.vscode/mcp.json` |
+
+配置好后重启客户端即可。首次工具调用会自动构建索引，watchdog 保持实时同步。
+
+> **Tip**: 想预建索引避免首次延迟？运行 `uv run python -c "import code_nearby; code_nearby.analyze('.')"`。
+
+### 3. 开始使用
+
+---
+
+### 手动安装
 
 ```bash
 pip install code-nearby[mcp]
-# or
+# 或
 uv add code-nearby --extra mcp
 ```
 
-### 2. Configure your MCP client
-
-Add to `.claude/settings.json` (project or global):
-
-```json
-{
-  "mcpServers": {
-    "nearby": {
-      "command": "uv",
-      "args": ["run", "--project", "/path/to/code-nearby/repo", "nearby-mcp"]
-    }
-  }
-}
-```
-
-That's it. The first tool call will auto-build the index; watchdog keeps it in sync from there.
-
-> **Tip**: Want to pre-build the index to avoid first-call latency? Run `python -c "import code_nearby; code_nearby.analyze('.')"` once.
-
-### 3. Start chatting
+MCP 配置中 `args` 指向你的安装路径即可。
 
 Your LLM can now use:
 
