@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import warnings
 from pathlib import Path
 
 
@@ -21,12 +23,23 @@ def load_config() -> dict:
 
     try:
         data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError:
+        warnings.warn(
+            f"Failed to parse {path}, using default config. "
+            "Fix or delete the file to resolve this warning.",
+            stacklevel=2,
+        )
+        return _default_config()
+    except OSError:
+        warnings.warn(
+            f"Could not read {path}, using default config.",
+            stacklevel=2,
+        )
         return _default_config()
 
     if "local_path" not in data:
         return _default_config()
-    return data
+    return data  # type: ignore[no-any-return]
 
 
 def save_config(config: dict) -> None:
@@ -37,8 +50,9 @@ def save_config(config: dict) -> None:
         try:
             existing = json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
-            pass
-    existing.update({k: str(v) for k, v in config.items()})
+            logging.warning("Config file %s is corrupted, backing up and starting fresh", path)
+            path.rename(path.with_suffix(".json.corrupted"))
+    existing.update(config)
     path.write_text(json.dumps(existing, indent=2) + "\n")
 
 

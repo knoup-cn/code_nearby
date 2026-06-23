@@ -53,9 +53,6 @@ def clear() -> None:
 def analyze(
     target: str = typer.Argument(".", help="Path to source directory"),
     full: bool = typer.Option(False, "--full", help="Force full rebuild"),
-    kb_name: str = typer.Option(
-        None, "--kb-name", help="Explicit knowledge base name (avoids directory name conflicts)"
-    ),
 ) -> None:
     """分析源码目录——产出 RAG 检索索引 + 依赖图。
 
